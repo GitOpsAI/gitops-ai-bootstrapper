@@ -1,16 +1,16 @@
-# GitOps AI Bootstrapper
+# GitOps AI - Bootstrapper
 
-GitOps-managed Kubernetes infrastructure for AI-powered applications powered by the [Flux Operator](https://fluxoperator.dev/) and [Flux CD](https://fluxcd.io/). A single bootstrap script provisions a Kubernetes cluster, installs all infrastructure components, and enables continuous delivery from Git.
+GitOps-managed Kubernetes infrastructure for AI-powered applications powered by the [Flux Operator](https://fluxoperator.dev/) and [Flux CD](https://fluxcd.io/). A single bootstrap application provisions a Kubernetes cluster, installs all infrastructure components, and enables continuous delivery from Git.
 
 ## Why GitOps for your infrastructure
 
 **💾 Infrastructure as Code** -- your entire cluster is defined in Git. Every change is versioned, reviewable, and reversible. You can modify infrastructure with AI coding assistants (Cursor, Copilot, Claude) that understand YAML and Helm values -- describe what you want in natural language and commit the result.
 
-**Security by default** -- containers run as non-root with read-only filesystems and dropped capabilities. Network policies isolate workloads so pods can only communicate with explicitly allowed services. Secrets are encrypted at rest with SOPS/Age before they ever reach Git. SSL certificates are automatically managed by cert-manager.
+**🔒 Security by default** -- containers run as non-root with read-only filesystems and dropped capabilities. Network policies isolate workloads so pods can only communicate with explicitly allowed services. Secrets are encrypted at rest with SOPS/Age before they ever reach Git. SSL certificates are automatically managed by cert-manager.
 
-**Reproducible deployments** -- the same bootstrap script produces an identical cluster every time, on any supported machine. Drift is automatically corrected by Flux reconciliation -- if someone manually changes a resource, Flux reverts it to match Git within minutes.
+**🔄 Reproducible deployments** -- the same bootstrap script produces an identical cluster every time, on any supported machine. Drift is automatically corrected by Flux reconciliation -- if someone manually changes a resource, Flux reverts it to match Git within minutes.
 
-**Scalable and flexible** -- powered by Kubernetes, you can add worker nodes to grow capacity or drop in new components like Lego blocks. Need a database, a message queue, or another AI model? Add a HelmRelease to the repo and push -- Flux deploys it automatically.
+**🔌 Scalable and flexible** -- powered by Kubernetes, you can add worker nodes to grow capacity or drop in new components like Lego blocks. Need a database, a message queue, or another AI model? Add a HelmRelease to the repo and push -- Flux deploys it automatically.
 
 ## Quick Start
 
