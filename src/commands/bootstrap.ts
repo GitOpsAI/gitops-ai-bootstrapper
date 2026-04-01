@@ -427,14 +427,6 @@ function resolveRepoRoot(): string {
 // ---------------------------------------------------------------------------
 
 async function createAndCloneRepo(wizard: WizardState): Promise<string> {
-  log.step("Checking prerequisites");
-  if (!commandExists("curl")) {
-    log.error("curl is required but not installed.");
-    return process.exit(1) as never;
-  }
-  log.success("curl");
-  await ensureAll(["git", "jq", "glab"]);
-
   log.step("Authenticating with GitLab");
   await gitlab.authenticate(wizard.gitlabPat, SOURCE_GITLAB_HOST);
 
@@ -591,7 +583,7 @@ export async function bootstrap(): Promise<void> {
     `💅 Secure, isolated and flexible GitOps infrastructure for modern requirements\n` +
     `🤖 You can manage it yourself — or delegate to AI.\n` +
     `🔐 Encrypted secrets, hardened containers, continuous delivery.`,
-    pc.bold("Welcome to GitOps AI Bootstraper"),
+    pc.bold("Welcome to GitOps AI Bootstrapper"),
     {
       contentAlign: "center",
       titleAlign: "center",
@@ -672,6 +664,75 @@ export async function bootstrap(): Promise<void> {
   });
   log.success("Configuration saved");
 
+  // ── Warn about CLI tools that will be installed ─────────────────────
+  const toolDescriptions: [string, string][] = [
+    ["git",            "Version control (repo operations)"],
+    ["jq",             "JSON processor (API responses)"],
+    ["glab",           "GitLab CLI (repo & auth management)"],
+    ["kubectl",        "Kubernetes CLI (cluster management)"],
+    ["helm",           "Kubernetes package manager (chart installs)"],
+    ["k9s",            "Terminal UI for Kubernetes (monitoring)"],
+    ["flux-operator",  "FluxCD Operator CLI (GitOps reconciliation)"],
+    ["sops",           "Mozilla SOPS (secret encryption)"],
+    ["age",            "Age encryption (SOPS key backend)"],
+  ];
+  if (isMacOS() || isCI()) {
+    toolDescriptions.push(["k3d", "Lightweight K3s in Docker (local cluster)"]);
+  }
+
+  const toBeInstalled = toolDescriptions
+    .filter(([name]) => !commandExists(name));
+
+  const toolListFormatted = toolDescriptions
+    .map(([name, desc]) => {
+      const status = commandExists(name)
+        ? pc.green("installed")
+        : pc.yellow("will install");
+      return `  ${pc.bold(name.padEnd(16))} ${pc.dim(desc)}  [${status}]`;
+    })
+    .join("\n");
+
+  const uninstallMac = toolDescriptions
+    .map(([name]) => name)
+    .join(" ");
+
+  p.note(
+    `${pc.bold("The following CLI tools are required and will be installed if missing:")}\n\n` +
+    toolListFormatted +
+    "\n\n" +
+    pc.dim("─".repeat(60)) + "\n\n" +
+    pc.bold("Why are these needed?\n") +
+    pc.dim("These tools are used to create and manage your Kubernetes cluster,\n") +
+    pc.dim("deploy components via Helm/Flux, encrypt secrets, and interact with GitLab.\n\n") +
+    pc.bold("How to uninstall later:\n") +
+    (isMacOS()
+      ? `  ${pc.cyan(`brew uninstall ${uninstallMac}`)}\n`
+      : `  ${pc.cyan("sudo rm -f /usr/local/bin/{kubectl,helm,k9s,flux-operator,sops,age,age-keygen}")}\n` +
+        `  ${pc.cyan("sudo apt remove -y glab jq git")}  ${pc.dim("(if installed via apt)")}\n`
+    ) +
+    pc.dim("\nAlready-installed tools will be skipped. No system tools will be modified."),
+    "Required CLI Tools",
+  );
+
+  const confirmMsg = toBeInstalled.length > 0
+    ? `Install ${toBeInstalled.length} missing tool(s) and continue?`
+    : "All tools are already installed. Continue?";
+  const proceed = await p.confirm({
+    message: pc.bold(confirmMsg),
+    initialValue: true,
+  });
+  if (p.isCancel(proceed) || !proceed) {
+    log.error("Aborted.");
+    return process.exit(1) as never;
+  }
+
+  // ── Install all CLI tools upfront ───────────────────────────────────
+  if (toBeInstalled.length > 0) {
+    log.step("Installing CLI tools");
+    const allToolNames = toolDescriptions.map(([name]) => name);
+    await ensureAll(allToolNames);
+  }
+
   // ── Repo creation phase (new mode only) ─────────────────────────────
   let repoRoot: string;
 
@@ -726,12 +787,6 @@ export async function bootstrap(): Promise<void> {
       return process.exit(1) as never;
     }
   }
-
-  // ── Install dependencies ─────────────────────────────────────────────
-  log.step("Installing dependencies");
-  const deps = ["kubectl", "helm", "k9s", "flux-operator"];
-  if (isMacOS() || isCI()) deps.push("k3d");
-  await ensureAll(deps);
 
   // ── Create Kubernetes cluster ────────────────────────────────────────
   log.step("Setting up Kubernetes cluster");
@@ -819,7 +874,6 @@ export async function bootstrap(): Promise<void> {
   // ── SOPS initialization & secret encryption ──────────────────────────
   log.step("Setting up SOPS secret encryption");
   const sopsCfg = defaultSopsConfig(repoRoot);
-  await ensureAll(["sops", "age"]);
 
   try {
     if (!encryption.ageKeyExists(sopsCfg)) {

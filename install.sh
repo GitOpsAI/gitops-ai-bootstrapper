@@ -44,4 +44,4 @@ ok "node $(node --version)"
 # ---------------------------------------------------------------------------
 
 log "Starting Flux CLI"
-exec npx fluxcd-ai-homelab bootstrap < /dev/tty
+exec npx gitops-ai bootstrap < /dev/tty

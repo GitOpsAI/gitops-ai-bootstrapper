@@ -1,7 +1,7 @@
 {
-  "name": "fluxcd-ai-homelab",
+  "name": "gitops-ai",
   "version": "1.0.0",
-  "description": "Flux GitOps cluster bootstrap CLI with interactive TUI",
+  "description": "Flux GitOps infrastructure management CLI with interactive TUI",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
