@@ -11,7 +11,6 @@ import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { ensureAll } from "./dependencies.js";
-import * as gitlab from "./gitlab.js";
 import * as k8s from "./kubernetes.js";
 import * as flux from "./flux.js";
 import * as encryption from "./encryption.js";
@@ -52,13 +51,11 @@ export async function runBootstrap(
     exec('git config user.name "GitOps Bootstrap"', { cwd: repoRoot });
   }
   const { stdout: remoteUrl } = execSafe("git remote get-url origin", { cwd: repoRoot });
-  if (remoteUrl && /@/.test(remoteUrl)) {
-    exec(
-      `git remote set-url origin "${remoteUrl.replace(/\/\/[^@]+@/, "//")}"`,
-      { cwd: repoRoot },
-    );
+  if (remoteUrl) {
+    const cleanUrl = remoteUrl.replace(/\/\/[^@]+@/, "//");
+    const authedUrl = cleanUrl.replace("//", `//oauth2:${config.gitlabPat}@`);
+    exec(`git remote set-url origin "${authedUrl}"`, { cwd: repoRoot });
   }
-  gitlab.configureGitCredentials(config.gitlabPat, repoRoot);
 
   const currentBranch = execSafe("git branch --show-current", { cwd: repoRoot }).stdout;
   if (currentBranch !== config.repoBranch) {
