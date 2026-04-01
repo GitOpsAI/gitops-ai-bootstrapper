@@ -14,7 +14,12 @@ GitOps-managed Kubernetes infrastructure for AI-powered applications powered by 
 
 ## Quick Start
 
-SSH into your server (or run locally on macOS) and run:
+Run on our macOS machine:
+```bash
+npx gitops-ai bootstrap
+```
+
+Or SSH into your server (or run locally on macOS) and run:
 
 ```bash
 curl -sfL https://raw.githubusercontent.com/your-org/gitops-ai/main/install.sh | bash
@@ -49,6 +54,18 @@ macOS requires a Docker-compatible runtime for k3d. Install one of:
 - [Colima](https://github.com/abiosoft/colima)
 
 On Linux the bootstrap installs k3s directly -- no Docker required.
+
+## Template Repository
+
+This CLI bootstraps clusters from the [GitOps AI Template](https://gitlab.com/everythings-gonna-be-alright/gitops_ai_template) -- a ready-made GitOps repository structure that Flux uses as the single source of truth for your cluster.
+
+The template contains the declarative Kubernetes manifests, HelmRelease definitions, Kustomization overlays, and SOPS encryption configuration that define a complete infrastructure stack. When you run `npx gitops-ai bootstrap`, the CLI forks this template into your GitLab namespace, customises it with your cluster variables (domain, tokens, component selections), and points Flux at the resulting repository. From that moment on, every `git push` to the repo triggers Flux reconciliation -- your cluster converges to match whatever is declared in Git.
+
+Keeping the template in a separate repository means:
+
+- **Upstream updates** -- pull improvements, new components, and security patches from the upstream template without disrupting your running cluster.
+- **Clean separation** -- the bootstrapper CLI handles provisioning logic; the template holds pure infrastructure declarations. Each can be versioned and tested independently.
+- **Customisation without lock-in** -- after the fork you own the repo. Add namespaces, swap Helm charts, or restructure directories to fit your needs.
 
 ## CLI Commands
 
