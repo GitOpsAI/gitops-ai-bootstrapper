@@ -90,6 +90,28 @@ describe("Integration", { timeout: 1_800_000 }, () => {
 
   // ── Assertions ──────────────────────────────────────────────────────────
 
+  it("should have healthy cluster nodes", () => {
+    log("Checking cluster nodes");
+    const { exitCode, stderr } = execSafe(
+      "kubectl wait --for=condition=Ready node --all --timeout=30s",
+    );
+    assert.equal(exitCode, 0, `Nodes not ready: ${stderr}`);
+
+    const { stdout } = execSafe("kubectl get nodes -o wide");
+    if (stdout) console.log(stdout);
+  });
+
+  it("should have Flux Operator running", () => {
+    log("Checking Flux Operator pods");
+    const { exitCode, stderr } = execSafe(
+      "kubectl -n flux-system wait pod --for=condition=Ready -l app.kubernetes.io/name=flux-operator --timeout=60s",
+    );
+    assert.equal(exitCode, 0, `Flux Operator pod not ready: ${stderr}`);
+
+    const { stdout } = execSafe("kubectl get pods -n flux-system");
+    if (stdout) console.log(stdout);
+  });
+
   it("should reconcile Flux Kustomizations", { timeout: 360_000 }, (t) => {
     if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed (no flux-instance-values.yaml)");
@@ -132,22 +154,24 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     }
   });
 
-  it("should display Flux reconciliation status", (t) => {
-    if (!result.fluxInstanceInstalled) {
-      t.skip("Flux Instance not installed");
-      return;
-    }
+  it("should display cluster status", () => {
+    log("Cluster status");
 
-    log("Flux reconciliation status");
-    const resources = [
-      "kustomizations",
-      "gitrepositories",
-      "helmrepositories",
-      "helmreleases",
+    const sections: [string, string][] = [
+      ["Namespaces",        "kubectl get namespaces"],
+      ["Pods (all)",        "kubectl get pods -A"],
+      ["Kustomizations",    "kubectl get kustomizations -A"],
+      ["GitRepositories",   "kubectl get gitrepositories -A"],
+      ["HelmRepositories",  "kubectl get helmrepositories -A"],
+      ["HelmReleases",      "kubectl get helmreleases -A"],
     ];
-    for (const resource of resources) {
-      const { stdout } = execSafe(`kubectl get ${resource} -A`);
-      if (stdout) console.log(stdout);
+
+    for (const [label, cmd] of sections) {
+      const { stdout } = execSafe(cmd);
+      if (stdout) {
+        console.log(`\n── ${label} ──`);
+        console.log(stdout);
+      }
     }
   });
 });
