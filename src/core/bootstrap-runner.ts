@@ -51,6 +51,13 @@ export async function runBootstrap(
     exec('git config user.email "bootstrap@gitops.local"', { cwd: repoRoot });
     exec('git config user.name "GitOps Bootstrap"', { cwd: repoRoot });
   }
+  const { stdout: remoteUrl } = execSafe("git remote get-url origin", { cwd: repoRoot });
+  if (remoteUrl && /@/.test(remoteUrl)) {
+    exec(
+      `git remote set-url origin "${remoteUrl.replace(/\/\/[^@]+@/, "//")}"`,
+      { cwd: repoRoot },
+    );
+  }
   gitlab.configureGitCredentials(config.gitlabPat, repoRoot);
 
   const currentBranch = execSafe("git branch --show-current", { cwd: repoRoot }).stdout;
