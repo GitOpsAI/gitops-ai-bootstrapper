@@ -1,16 +1,10 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  cpSync,
-  mkdirSync,
-} from "node:fs";
-import { exec, execSafe } from "../src/utils/shell.js";
-import * as k8s from "../src/core/kubernetes.js";
-import * as flux from "../src/core/flux.js";
-import type { BootstrapConfig } from "../src/schemas.js";
+import { execSafe } from "../src/utils/shell.js";
+import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
+import { COMPONENTS, type BootstrapConfig } from "../src/schemas.js";
+
+const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
 
 // ---------------------------------------------------------------------------
 // CI environment
@@ -25,12 +19,8 @@ const GITLAB_PAT = process.env.GITLAB_PAT ?? "";
 
 const SOURCE_BRANCH = `ci-test-${CI_PIPELINE_ID}`;
 const CLUSTER_NAME = "ci-test";
-const CLUSTER_DOMAIN = "example.com";
-const CLUSTER_PUBLIC_IP = "127.0.0.1";
-const LETSENCRYPT_EMAIL = "ci@example.com";
-const INGRESS_ALLOWED_IPS = "0.0.0.0/0";
 
-let fluxInstanceInstalled = false;
+let result: RunBootstrapResult;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,13 +39,6 @@ async function waitForDocker(timeoutMs = 60_000): Promise<void> {
   throw new Error("Docker did not become available within timeout");
 }
 
-function envsubst(content: string, vars: Record<string, string>): string {
-  return Object.entries(vars).reduce(
-    (acc, [k, v]) => acc.replaceAll(`\${${k}}`, v),
-    content,
-  );
-}
-
 function remoteUrl(): string {
   return `https://oauth2:${GITLAB_PAT}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git`;
 }
@@ -69,86 +52,22 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     log("Waiting for Docker");
     await waitForDocker();
 
-    // ── Git test branch ─────────────────────────────────────────────────
-    log("Setting up test branch");
-    exec('git config --global user.email "ci@example.com"');
-    exec('git config --global user.name "GitLab CI"');
-    try {
-      exec(`git remote set-url origin "${remoteUrl()}"`);
-    } catch {
-      exec(`git remote add origin "${remoteUrl()}"`);
-    }
-    exec(`git checkout -b "${SOURCE_BRANCH}"`);
-    exec(`git push -u origin "${SOURCE_BRANCH}"`);
-
-    // ── Kubernetes cluster ──────────────────────────────────────────────
-    log("Creating k3d cluster");
-    await k8s.createK3dCluster(CLUSTER_NAME);
-
-    log("Setting up kubeconfig");
-    k8s.setupKubeconfig(CLUSTER_NAME);
-
-    log("Waiting for cluster nodes");
-    await k8s.waitForCluster();
-
-    // ── Flux ────────────────────────────────────────────────────────────
-    log("Installing Flux Operator");
-    await flux.installOperator();
-
-    log("Creating GitLab auth secret");
-    await k8s.createNamespace("flux-system");
-    await k8s.createSecret("flux-system", "flux-system", {
-      username: "git",
-      password: GITLAB_PAT,
-    });
-
-    // ── Cluster template (present in the template repo) ─────────────────
-    if (existsSync("clusters/_default-template")) {
-      log("Rendering cluster template");
-      const clusterDir = `clusters/${CLUSTER_NAME}`;
-      mkdirSync(clusterDir, { recursive: true });
-      cpSync("clusters/_default-template", clusterDir, { recursive: true });
-
-      const syncFile = `${clusterDir}/cluster-sync.yaml`;
-      if (existsSync(syncFile)) {
-        writeFileSync(
-          syncFile,
-          envsubst(readFileSync(syncFile, "utf-8"), {
-            CLUSTER_NAME,
-            CLUSTER_DOMAIN,
-            CLUSTER_PUBLIC_IP,
-            LETSENCRYPT_EMAIL,
-            INGRESS_NGINX_ALLOWED_IPS: INGRESS_ALLOWED_IPS,
-          }),
-        );
-      }
-
-      exec("git add .");
-      execSafe('git commit -m "ci: render cluster template"');
-      exec(`git push origin "${SOURCE_BRANCH}"`);
-    }
-
-    // ── Flux Instance (needs flux-instance-values.yaml) ─────────────────
-    if (existsSync("flux-instance-values.yaml")) {
-      log("Installing Flux Instance");
-      const config: BootstrapConfig = {
+    log("Running bootstrap");
+    result = await runBootstrap(
+      {
         clusterName: CLUSTER_NAME,
-        clusterDomain: CLUSTER_DOMAIN,
-        clusterPublicIp: CLUSTER_PUBLIC_IP,
-        letsencryptEmail: LETSENCRYPT_EMAIL,
-        ingressAllowedIps: INGRESS_ALLOWED_IPS,
+        clusterDomain: "example.com",
+        clusterPublicIp: "127.0.0.1",
+        letsencryptEmail: "ci@example.com",
+        ingressAllowedIps: "0.0.0.0/0",
         gitlabPat: GITLAB_PAT,
         repoName: CI_PROJECT_NAME,
         repoOwner: CI_PROJECT_NAMESPACE,
         repoBranch: SOURCE_BRANCH,
-        selectedComponents: [],
-      };
-
-      await flux.installInstance(config, process.cwd());
-      await flux.waitForInstance();
-      await flux.reconcile();
-      fluxInstanceInstalled = true;
-    }
+        selectedComponents: ALL_COMPONENT_IDS,
+      },
+      process.cwd(),
+    );
   });
 
   after(() => {
@@ -158,8 +77,30 @@ describe("Integration", { timeout: 1_800_000 }, () => {
 
   // ── Assertions ──────────────────────────────────────────────────────────
 
+  it("should have healthy cluster nodes", () => {
+    log("Checking cluster nodes");
+    const { exitCode, stderr } = execSafe(
+      "kubectl wait --for=condition=Ready node --all --timeout=30s",
+    );
+    assert.equal(exitCode, 0, `Nodes not ready: ${stderr}`);
+
+    const { stdout } = execSafe("kubectl get nodes -o wide");
+    if (stdout) console.log(stdout);
+  });
+
+  it("should have Flux Operator running", () => {
+    log("Checking Flux Operator pods");
+    const { exitCode, stderr } = execSafe(
+      "kubectl -n flux-system wait pod --for=condition=Ready -l app.kubernetes.io/name=flux-operator --timeout=60s",
+    );
+    assert.equal(exitCode, 0, `Flux Operator pod not ready: ${stderr}`);
+
+    const { stdout } = execSafe("kubectl get pods -n flux-system");
+    if (stdout) console.log(stdout);
+  });
+
   it("should reconcile Flux Kustomizations", { timeout: 360_000 }, (t) => {
-    if (!fluxInstanceInstalled) {
+    if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed (no flux-instance-values.yaml)");
       return;
     }
@@ -171,16 +112,18 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     assert.equal(exitCode, 0, `Kustomization not ready: ${stderr}`);
   });
 
-  it("should have all HelmReleases ready after cleanup", { timeout: 900_000 }, (t) => {
-    if (!fluxInstanceInstalled) {
+  it("should have all HelmReleases ready", { timeout: 900_000 }, (t) => {
+    if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed");
       return;
     }
 
     log("Removing HelmReleases that require real credentials");
-    execSafe(
-      "kubectl delete helmrelease external-dns -n external-dns --ignore-not-found",
-    );
+    for (const hr of [
+      "external-dns -n external-dns",
+    ]) {
+      execSafe(`kubectl delete helmrelease ${hr} --ignore-not-found`);
+    }
 
     log("Waiting for all HelmReleases to become Ready");
     const { stdout } = execSafe(
@@ -200,22 +143,24 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     }
   });
 
-  it("should display Flux reconciliation status", (t) => {
-    if (!fluxInstanceInstalled) {
-      t.skip("Flux Instance not installed");
-      return;
-    }
+  it("should display cluster status", () => {
+    log("Cluster status");
 
-    log("Flux reconciliation status");
-    const resources = [
-      "kustomizations",
-      "gitrepositories",
-      "helmrepositories",
-      "helmreleases",
+    const sections: [string, string][] = [
+      ["Namespaces",        "kubectl get namespaces"],
+      ["Pods (all)",        "kubectl get pods -A"],
+      ["Kustomizations",    "kubectl get kustomizations -A"],
+      ["GitRepositories",   "kubectl get gitrepositories -A"],
+      ["HelmRepositories",  "kubectl get helmrepositories -A"],
+      ["HelmReleases",      "kubectl get helmreleases -A"],
     ];
-    for (const resource of resources) {
-      const { stdout } = execSafe(`kubectl get ${resource} -A`);
-      if (stdout) console.log(stdout);
+
+    for (const [label, cmd] of sections) {
+      const { stdout } = execSafe(cmd);
+      if (stdout) {
+        console.log(`\n── ${label} ──`);
+        console.log(stdout);
+      }
     }
   });
 });
