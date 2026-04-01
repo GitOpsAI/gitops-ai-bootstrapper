@@ -64,7 +64,7 @@ If a component was disabled during bootstrap and you want to add it later:
 3. If the component requires secrets (check the component directory for `secret-*.yaml` files), encrypt them with SOPS:
 
 ```bash
-npx fluxcd-ai-homelab sops encrypt clusters/<name>/components/<id>/secret-*.yaml
+npx gitops-ai sops encrypt clusters/<name>/components/<id>/secret-*.yaml
 ```
 
 4. Commit and push
@@ -83,13 +83,13 @@ After editing a decrypted secret, re-encrypt before committing:
 
 ```bash
 # Decrypt, edit, re-encrypt a single file
-npx fluxcd-ai-homelab sops edit clusters/homelab/components/cert-manager/secret-cloudflare.yaml
+npx gitops-ai sops edit clusters/homelab/components/cert-manager/secret-cloudflare.yaml
 
 # Or encrypt all plaintext secrets at once
-npx fluxcd-ai-homelab sops encrypt
+npx gitops-ai sops encrypt
 
 # Check which secrets need encryption
-npx fluxcd-ai-homelab sops status
+npx gitops-ai sops status
 ```
 
 ### Rotating the SOPS key
@@ -97,7 +97,7 @@ npx fluxcd-ai-homelab sops status
 If you need to rotate the age encryption key (e.g. after a key compromise):
 
 ```bash
-npx fluxcd-ai-homelab sops rotate
+npx gitops-ai sops rotate
 ```
 
 This generates a new age key, decrypts all secrets with the old key, re-encrypts with the new key, and updates the Kubernetes secret. Commit the updated `.sops.yaml` and re-encrypted files afterward.
