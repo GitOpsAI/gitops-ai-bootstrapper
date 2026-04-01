@@ -67,3 +67,4 @@ integration-test:
         --delete "ci-test-${CI_PIPELINE_ID}" 2>/dev/null || true
   rules:
     - if: $CI_MERGE_REQUEST_IID
+
