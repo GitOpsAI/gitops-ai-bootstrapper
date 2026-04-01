@@ -1,6 +1,6 @@
 # Bootstrap Walkthrough
 
-This document describes what happens when you run `npx fluxcd-ai-homelab bootstrap`, step by step.
+This document describes what happens when you run `npx gitops-ai bootstrap`, step by step.
 
 ## Overview
 
@@ -132,7 +132,7 @@ Commits all changes (cluster config + encrypted secrets) and pushes to your GitL
 
 ## Resume Capability
 
-Configuration is saved to `/tmp/installplan.json` (mode `0600`) after the wizard completes. If the bootstrap fails partway through, re-running `npx fluxcd-ai-homelab bootstrap` detects the saved plan and offers to resume with your previous inputs pre-filled.
+Configuration is saved to `/tmp/installplan.json` (mode `0600`) after the wizard completes. If the bootstrap fails partway through, re-running `npx gitops-ai bootstrap` detects the saved plan and offers to resume with your previous inputs pre-filled.
 
 The plan file is automatically deleted on successful completion.
 
@@ -141,7 +141,7 @@ The plan file is automatically deleted on successful completion.
 After bootstrap, if OpenClaw is installed, pair a device with:
 
 ```bash
-npx fluxcd-ai-homelab openclaw-pair
+npx gitops-ai openclaw-pair
 ```
 
 This connects to the OpenClaw deployment via `kubectl exec`, lists pending device pairing requests, and lets you approve one by entering its request ID.
