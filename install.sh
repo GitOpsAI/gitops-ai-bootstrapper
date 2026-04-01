@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage:
-#   curl -sfL https://raw.githubusercontent.com/your-org/fluxcd-ai-homelab/main/install.sh | bash
-#   or: npx fluxcd-ai-homelab bootstrap
-
 OS="$(uname -s)"
 
 BOLD='\033[1m'
