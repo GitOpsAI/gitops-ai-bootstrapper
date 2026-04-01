@@ -37,13 +37,13 @@ graph LR
 
 2. **Your GitOps repository** -- a fork/clone of the template, owned by your GitLab namespace. This is the single source of truth for your cluster. All changes flow through Git.
 
-3. **Bootstrap CLI** (`fluxcd-ai-homelab`) -- the npm package you run. It clones the template, collects configuration, provisions the cluster, and installs Flux. After bootstrap, you rarely need it again.
+3. **Bootstrap CLI** (`gitops-ai`) -- the npm package you run. It clones the template, collects configuration, provisions the cluster, and installs Flux. After bootstrap, you rarely need it again.
 
 ## Bootstrap Flow
 
 ```mermaid
 flowchart TD
-    Start["npx fluxcd-ai-homelab bootstrap"] --> Resume{"Saved plan<br/>exists?"}
+    Start["npx gitops-ai bootstrap"] --> Resume{"Saved plan<br/>exists?"}
     Resume -->|Yes| LoadPlan["Load /tmp/installplan.json"]
     Resume -->|No| Wizard["Interactive Wizard"]
     LoadPlan --> Wizard

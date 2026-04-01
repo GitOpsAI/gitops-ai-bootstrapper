@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "fluxcd-ai-homelab": "dist/index.js"
+    "gitops-ai": "dist/index.js"
   },
   "files": [
     "dist"
