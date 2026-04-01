@@ -131,7 +131,9 @@ export async function runBootstrap(
       `git commit -m "Add ${config.clusterName} cluster with encrypted secrets"`,
       { cwd: repoRoot },
     );
-    await execAsync("git push", { cwd: repoRoot });
+    await execAsync(`git push -u origin "${config.repoBranch}"`, {
+      cwd: repoRoot,
+    });
   });
 
   // ── Flux Instance ─────────────────────────────────────────────────
