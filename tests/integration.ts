@@ -2,7 +2,9 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execSafe } from "../src/utils/shell.js";
 import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
-import { REQUIRED_COMPONENT_IDS, type BootstrapConfig } from "../src/schemas.js";
+import { COMPONENTS, type BootstrapConfig } from "../src/schemas.js";
+
+const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
 
 // ---------------------------------------------------------------------------
 // CI environment
@@ -62,7 +64,7 @@ describe("Integration", { timeout: 1_800_000 }, () => {
         repoName: CI_PROJECT_NAME,
         repoOwner: CI_PROJECT_NAMESPACE,
         repoBranch: SOURCE_BRANCH,
-        selectedComponents: REQUIRED_COMPONENT_IDS,
+        selectedComponents: ALL_COMPONENT_IDS,
       },
       process.cwd(),
     );
@@ -114,6 +116,13 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed");
       return;
+    }
+
+    log("Removing HelmReleases that require real credentials");
+    for (const hr of [
+      "external-dns -n external-dns",
+    ]) {
+      execSafe(`kubectl delete helmrelease ${hr} --ignore-not-found`);
     }
 
     log("Waiting for all HelmReleases to become Ready");
