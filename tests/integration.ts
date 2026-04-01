@@ -1,15 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  cpSync,
-  mkdirSync,
-} from "node:fs";
 import { exec, execSafe } from "../src/utils/shell.js";
-import * as k8s from "../src/core/kubernetes.js";
-import * as flux from "../src/core/flux.js";
+import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
 import type { BootstrapConfig } from "../src/schemas.js";
 
 // ---------------------------------------------------------------------------
@@ -25,12 +17,8 @@ const GITLAB_PAT = process.env.GITLAB_PAT ?? "";
 
 const SOURCE_BRANCH = `ci-test-${CI_PIPELINE_ID}`;
 const CLUSTER_NAME = "ci-test";
-const CLUSTER_DOMAIN = "example.com";
-const CLUSTER_PUBLIC_IP = "127.0.0.1";
-const LETSENCRYPT_EMAIL = "ci@example.com";
-const INGRESS_ALLOWED_IPS = "0.0.0.0/0";
 
-let fluxInstanceInstalled = false;
+let result: RunBootstrapResult;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,13 +35,6 @@ async function waitForDocker(timeoutMs = 60_000): Promise<void> {
     await new Promise((r) => setTimeout(r, 1_000));
   }
   throw new Error("Docker did not become available within timeout");
-}
-
-function envsubst(content: string, vars: Record<string, string>): string {
-  return Object.entries(vars).reduce(
-    (acc, [k, v]) => acc.replaceAll(`\${${k}}`, v),
-    content,
-  );
 }
 
 function remoteUrl(): string {
@@ -81,74 +62,25 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     exec(`git checkout -b "${SOURCE_BRANCH}"`);
     exec(`git push -u origin "${SOURCE_BRANCH}"`);
 
-    // ── Kubernetes cluster ──────────────────────────────────────────────
-    log("Creating k3d cluster");
-    await k8s.createK3dCluster(CLUSTER_NAME);
+    // ── Bootstrap ───────────────────────────────────────────────────────
+    log("Running bootstrap");
+    const config: BootstrapConfig = {
+      clusterName: CLUSTER_NAME,
+      clusterDomain: "example.com",
+      clusterPublicIp: "127.0.0.1",
+      letsencryptEmail: "ci@example.com",
+      ingressAllowedIps: "0.0.0.0/0",
+      gitlabPat: GITLAB_PAT,
+      repoName: CI_PROJECT_NAME,
+      repoOwner: CI_PROJECT_NAMESPACE,
+      repoBranch: SOURCE_BRANCH,
+      selectedComponents: [],
+    };
 
-    log("Setting up kubeconfig");
-    k8s.setupKubeconfig(CLUSTER_NAME);
-
-    log("Waiting for cluster nodes");
-    await k8s.waitForCluster();
-
-    // ── Flux ────────────────────────────────────────────────────────────
-    log("Installing Flux Operator");
-    await flux.installOperator();
-
-    log("Creating GitLab auth secret");
-    await k8s.createNamespace("flux-system");
-    await k8s.createSecret("flux-system", "flux-system", {
-      username: "git",
-      password: GITLAB_PAT,
+    result = await runBootstrap(config, process.cwd(), {
+      skipSops: true,
+      skipComponentPruning: true,
     });
-
-    // ── Cluster template (present in the template repo) ─────────────────
-    if (existsSync("clusters/_default-template")) {
-      log("Rendering cluster template");
-      const clusterDir = `clusters/${CLUSTER_NAME}`;
-      mkdirSync(clusterDir, { recursive: true });
-      cpSync("clusters/_default-template", clusterDir, { recursive: true });
-
-      const syncFile = `${clusterDir}/cluster-sync.yaml`;
-      if (existsSync(syncFile)) {
-        writeFileSync(
-          syncFile,
-          envsubst(readFileSync(syncFile, "utf-8"), {
-            CLUSTER_NAME,
-            CLUSTER_DOMAIN,
-            CLUSTER_PUBLIC_IP,
-            LETSENCRYPT_EMAIL,
-            INGRESS_NGINX_ALLOWED_IPS: INGRESS_ALLOWED_IPS,
-          }),
-        );
-      }
-
-      exec("git add .");
-      execSafe('git commit -m "ci: render cluster template"');
-      exec(`git push origin "${SOURCE_BRANCH}"`);
-    }
-
-    // ── Flux Instance (needs flux-instance-values.yaml) ─────────────────
-    if (existsSync("flux-instance-values.yaml")) {
-      log("Installing Flux Instance");
-      const config: BootstrapConfig = {
-        clusterName: CLUSTER_NAME,
-        clusterDomain: CLUSTER_DOMAIN,
-        clusterPublicIp: CLUSTER_PUBLIC_IP,
-        letsencryptEmail: LETSENCRYPT_EMAIL,
-        ingressAllowedIps: INGRESS_ALLOWED_IPS,
-        gitlabPat: GITLAB_PAT,
-        repoName: CI_PROJECT_NAME,
-        repoOwner: CI_PROJECT_NAMESPACE,
-        repoBranch: SOURCE_BRANCH,
-        selectedComponents: [],
-      };
-
-      await flux.installInstance(config, process.cwd());
-      await flux.waitForInstance();
-      await flux.reconcile();
-      fluxInstanceInstalled = true;
-    }
   });
 
   after(() => {
@@ -159,7 +91,7 @@ describe("Integration", { timeout: 1_800_000 }, () => {
   // ── Assertions ──────────────────────────────────────────────────────────
 
   it("should reconcile Flux Kustomizations", { timeout: 360_000 }, (t) => {
-    if (!fluxInstanceInstalled) {
+    if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed (no flux-instance-values.yaml)");
       return;
     }
@@ -172,7 +104,7 @@ describe("Integration", { timeout: 1_800_000 }, () => {
   });
 
   it("should have all HelmReleases ready after cleanup", { timeout: 900_000 }, (t) => {
-    if (!fluxInstanceInstalled) {
+    if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed");
       return;
     }
@@ -201,7 +133,7 @@ describe("Integration", { timeout: 1_800_000 }, () => {
   });
 
   it("should display Flux reconciliation status", (t) => {
-    if (!fluxInstanceInstalled) {
+    if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed");
       return;
     }

@@ -57,7 +57,7 @@ integration-test:
     DOCKER_CERT_PATH: "/certs/client"
     DOCKER_TLS_VERIFY: "1"
   before_script:
-    - apk add --no-cache docker-cli git curl openssl
+    - apk add --no-cache docker-cli git curl openssl bash sudo
     - npm ci --ignore-scripts
   script:
     - npx tsx --test tests/integration.ts

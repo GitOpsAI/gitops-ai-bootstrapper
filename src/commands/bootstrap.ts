@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -17,12 +17,10 @@ import { saveInstallPlan, loadInstallPlan, clearInstallPlan } from "../utils/con
 import { execAsync, exec, commandExists } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { ensureAll } from "../core/dependencies.js";
-import * as k8s from "../core/kubernetes.js";
+import { runBootstrap } from "../core/bootstrap-runner.js";
 import * as flux from "../core/flux.js";
-import * as encryption from "../core/encryption.js";
 import * as gitlab from "../core/gitlab.js";
 import {
-  defaultSopsConfig,
   COMPONENTS,
   REQUIRED_COMPONENT_IDS,
   DNS_TLS_COMPONENT_IDS,
@@ -410,13 +408,6 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
 // Helpers
 // ---------------------------------------------------------------------------
 
-function envsubst(content: string, vars: Record<string, string>): string {
-  return Object.entries(vars).reduce(
-    (acc, [key, value]) => acc.replaceAll(`\${${key}}`, value),
-    content,
-  );
-}
-
 function resolveRepoRoot(): string {
   const scriptDir = new URL(".", import.meta.url).pathname;
   return resolve(scriptDir, "../../../");
@@ -788,194 +779,11 @@ export async function bootstrap(): Promise<void> {
     }
   }
 
-  // ── Create Kubernetes cluster ────────────────────────────────────────
-  log.step("Setting up Kubernetes cluster");
+  // ── Run bootstrap (cluster + flux + template + sops + git push) ─────
   try {
-    if (isMacOS() || isCI()) {
-      await k8s.createK3dCluster(fullConfig.clusterName);
-    } else {
-      await k8s.installK3s();
-    }
-
-    const kubeconfigPath = k8s.setupKubeconfig(fullConfig.clusterName);
-    log.success(`Kubeconfig: ${kubeconfigPath}`);
-
-    await k8s.waitForCluster();
+    await runBootstrap(fullConfig, repoRoot);
   } catch (err) {
-    log.error(`Kubernetes cluster setup failed\n${formatError(err)}`);
-    return process.exit(1) as never;
-  }
-
-  // ── Install Flux Operator ────────────────────────────────────────────
-  try {
-    await flux.installOperator();
-  } catch (err) {
-    log.error(`Flux Operator installation failed\n${formatError(err)}`);
-    return process.exit(1) as never;
-  }
-
-  // ── Create GitLab auth secret ────────────────────────────────────────
-  await runStep("Creating GitLab auth secret", async () => {
-    await k8s.createSecret("flux-system", "flux-system", {
-      username: "git",
-      password: fullConfig.gitlabPat,
-    });
-    log.success("flux-system secret created");
-  });
-
-  // ── Prepare cluster template ─────────────────────────────────────────
-  log.step(`Configuring cluster template for '${fullConfig.clusterName}'`);
-  const clusterDir = `${repoRoot}/clusters/${fullConfig.clusterName}`;
-  const templateDir = `${repoRoot}/clusters/_default-template`;
-
-  mkdirSync(clusterDir, { recursive: true });
-  cpSync(templateDir, clusterDir, { recursive: true });
-  log.detail(`Copied template → ${clusterDir}`);
-
-  const syncFile = `${clusterDir}/cluster-sync.yaml`;
-  let syncContent = readFileSync(syncFile, "utf-8");
-  syncContent = envsubst(syncContent, {
-    CLUSTER_NAME: fullConfig.clusterName,
-    CLUSTER_DOMAIN: fullConfig.clusterDomain,
-    CLUSTER_PUBLIC_IP: fullConfig.clusterPublicIp,
-    LETSENCRYPT_EMAIL: fullConfig.letsencryptEmail ?? "",
-    INGRESS_NGINX_ALLOWED_IPS: fullConfig.ingressAllowedIps,
-  });
-  writeFileSync(syncFile, syncContent);
-  log.detail(`Rendered cluster-sync.yaml with cluster vars`);
-
-  const allComponentIds = COMPONENTS.map((c) => c.id);
-  const disabledComponents = allComponentIds.filter(
-    (id) => !selectedComponents.includes(id),
-  );
-
-  for (const id of disabledComponents) {
-    const componentPath = `${clusterDir}/components/${id}`;
-    if (existsSync(componentPath)) {
-      rmSync(componentPath, { recursive: true, force: true });
-      log.detail(`Removed disabled component: ${id}`);
-    }
-  }
-
-  const kustomizationPath = `${clusterDir}/components/kustomization.yaml`;
-  if (existsSync(kustomizationPath)) {
-    let kustomization = readFileSync(kustomizationPath, "utf-8");
-    for (const id of disabledComponents) {
-      kustomization = kustomization
-        .split("\n")
-        .filter((line) => !line.includes(`- ${id}`))
-        .join("\n");
-    }
-    writeFileSync(kustomizationPath, kustomization);
-  }
-
-  log.success(`Cluster template configured (${selectedComponents.length} components enabled)`);
-
-  // ── SOPS initialization & secret encryption ──────────────────────────
-  log.step("Setting up SOPS secret encryption");
-  const sopsCfg = defaultSopsConfig(repoRoot);
-
-  try {
-    if (!encryption.ageKeyExists(sopsCfg)) {
-      encryption.generateAgeKey(sopsCfg);
-      log.detail(`Generated new age key at ${sopsCfg.keyFile}`);
-    } else {
-      log.detail(`Using existing age key at ${sopsCfg.keyFile}`);
-    }
-    const pubKey = encryption.getAgePublicKey(sopsCfg);
-    log.detail(`Age public key: ${pubKey}`);
-    encryption.createSopsConfig(pubKey, sopsCfg);
-    log.detail(`Created .sops.yaml config`);
-
-    if (k8s.isClusterReachable()) {
-      await k8s.createSecretFromFile(
-        sopsCfg.secretName,
-        sopsCfg.namespace,
-        "age.agekey",
-        sopsCfg.keyFile,
-      );
-      log.detail(`Created ${sopsCfg.secretName} secret in ${sopsCfg.namespace}`);
-    }
-    encryption.updateFluxKustomization(repoRoot, sopsCfg.secretName);
-  } catch (err) {
-    log.error(`SOPS setup failed\n${formatError(err)}`);
-    return process.exit(1) as never;
-  }
-
-  log.step("Encrypting secrets from templates");
-  const componentsDir = `${clusterDir}/components`;
-
-  try {
-    if (selectedComponents.includes("cert-manager") && fullConfig.cloudflareApiToken) {
-      encryption.substituteAndEncrypt(
-        `${componentsDir}/cert-manager/secret-cloudflare.yaml`,
-        { CLOUDFLARE_API_TOKEN: fullConfig.cloudflareApiToken },
-        sopsCfg,
-        repoRoot,
-      );
-      log.detail(`Encrypted: cert-manager/secret-cloudflare.yaml`);
-    }
-
-    if (selectedComponents.includes("external-dns") && fullConfig.cloudflareApiToken) {
-      encryption.substituteAndEncrypt(
-        `${componentsDir}/external-dns/secret-cloudflare.yaml`,
-        { CLOUDFLARE_API_TOKEN: fullConfig.cloudflareApiToken },
-        sopsCfg,
-        repoRoot,
-      );
-      log.detail(`Encrypted: external-dns/secret-cloudflare.yaml`);
-    }
-
-    if (
-      isOpenclawEnabled &&
-      fullConfig.openaiApiKey &&
-      fullConfig.openclawGatewayToken
-    ) {
-      encryption.substituteAndEncrypt(
-        `${componentsDir}/openclaw/secret-openclaw-envs.yaml`,
-        {
-          OPENAI_API_KEY: fullConfig.openaiApiKey,
-          OPENCLAW_GATEWAY_TOKEN: fullConfig.openclawGatewayToken,
-        },
-        sopsCfg,
-        repoRoot,
-      );
-      log.detail(`Encrypted: openclaw/secret-openclaw-envs.yaml`);
-    }
-  } catch (err) {
-    log.error(`Secret encryption failed\n${formatError(err)}`);
-    return process.exit(1) as never;
-  }
-
-  log.success("All secrets encrypted with SOPS");
-
-  // ── Git commit & push ────────────────────────────────────────────────
-  try {
-    await withSpinner("Committing and pushing to Git", () =>
-      execAsync(
-        `git add . && git commit -m "Add ${fullConfig.clusterName} cluster with encrypted secrets" && git push`,
-        { cwd: repoRoot },
-      ),
-    );
-  } catch (err) {
-    log.error(`Git push failed\n${formatError(err)}`);
-    return process.exit(1) as never;
-  }
-
-  // ── Install Flux Instance ────────────────────────────────────────────
-  try {
-    await flux.installInstance(fullConfig, repoRoot);
-    await flux.waitForInstance();
-  } catch (err) {
-    log.error(`Flux Instance setup failed\n${formatError(err)}`);
-    return process.exit(1) as never;
-  }
-
-  // ── Reconcile ────────────────────────────────────────────────────────
-  try {
-    await flux.reconcile();
-  } catch (err) {
-    log.error(`Flux reconciliation failed\n${formatError(err)}`);
+    log.error(`Bootstrap failed\n${formatError(err)}`);
     return process.exit(1) as never;
   }
 
