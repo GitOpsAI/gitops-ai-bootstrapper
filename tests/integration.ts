@@ -1,8 +1,8 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { exec, execSafe } from "../src/utils/shell.js";
+import { execSafe } from "../src/utils/shell.js";
 import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
-import type { BootstrapConfig } from "../src/schemas.js";
+import { REQUIRED_COMPONENT_IDS, type BootstrapConfig } from "../src/schemas.js";
 
 // ---------------------------------------------------------------------------
 // CI environment
@@ -50,37 +50,22 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     log("Waiting for Docker");
     await waitForDocker();
 
-    // ── Git test branch ─────────────────────────────────────────────────
-    log("Setting up test branch");
-    exec('git config --global user.email "ci@example.com"');
-    exec('git config --global user.name "GitLab CI"');
-    try {
-      exec(`git remote set-url origin "${remoteUrl()}"`);
-    } catch {
-      exec(`git remote add origin "${remoteUrl()}"`);
-    }
-    exec(`git checkout -b "${SOURCE_BRANCH}"`);
-    exec(`git push -u origin "${SOURCE_BRANCH}"`);
-
-    // ── Bootstrap ───────────────────────────────────────────────────────
     log("Running bootstrap");
-    const config: BootstrapConfig = {
-      clusterName: CLUSTER_NAME,
-      clusterDomain: "example.com",
-      clusterPublicIp: "127.0.0.1",
-      letsencryptEmail: "ci@example.com",
-      ingressAllowedIps: "0.0.0.0/0",
-      gitlabPat: GITLAB_PAT,
-      repoName: CI_PROJECT_NAME,
-      repoOwner: CI_PROJECT_NAMESPACE,
-      repoBranch: SOURCE_BRANCH,
-      selectedComponents: [],
-    };
-
-    result = await runBootstrap(config, process.cwd(), {
-      skipSops: true,
-      skipComponentPruning: true,
-    });
+    result = await runBootstrap(
+      {
+        clusterName: CLUSTER_NAME,
+        clusterDomain: "example.com",
+        clusterPublicIp: "127.0.0.1",
+        letsencryptEmail: "ci@example.com",
+        ingressAllowedIps: "0.0.0.0/0",
+        gitlabPat: GITLAB_PAT,
+        repoName: CI_PROJECT_NAME,
+        repoOwner: CI_PROJECT_NAMESPACE,
+        repoBranch: SOURCE_BRANCH,
+        selectedComponents: REQUIRED_COMPONENT_IDS,
+      },
+      process.cwd(),
+    );
   });
 
   after(() => {
@@ -125,16 +110,11 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     assert.equal(exitCode, 0, `Kustomization not ready: ${stderr}`);
   });
 
-  it("should have all HelmReleases ready after cleanup", { timeout: 900_000 }, (t) => {
+  it("should have all HelmReleases ready", { timeout: 900_000 }, (t) => {
     if (!result.fluxInstanceInstalled) {
       t.skip("Flux Instance not installed");
       return;
     }
-
-    log("Removing HelmReleases that require real credentials");
-    execSafe(
-      "kubectl delete helmrelease external-dns -n external-dns --ignore-not-found",
-    );
 
     log("Waiting for all HelmReleases to become Ready");
     const { stdout } = execSafe(

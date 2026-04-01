@@ -1,5 +1,6 @@
 import {
   existsSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
   cpSync,
@@ -8,21 +9,19 @@ import {
 } from "node:fs";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
-import { execAsync, execSafe } from "../utils/shell.js";
+import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { ensureAll } from "./dependencies.js";
+import * as gitlab from "./gitlab.js";
 import * as k8s from "./kubernetes.js";
 import * as flux from "./flux.js";
 import * as encryption from "./encryption.js";
 import {
   COMPONENTS,
   defaultSopsConfig,
+  SOURCE_GITLAB_HOST,
+  SOURCE_PROJECT_PATH,
   type BootstrapConfig,
 } from "../schemas.js";
-
-export interface RunBootstrapOptions {
-  skipSops?: boolean;
-  skipComponentPruning?: boolean;
-}
 
 export interface RunBootstrapResult {
   fluxInstanceInstalled: boolean;
@@ -33,18 +32,37 @@ export interface RunBootstrapResult {
  * and the integration test suite.
  *
  * Assumes git credentials and the working branch are already configured.
+ * If the template repo hasn't been cloned yet, it will be fetched
+ * automatically from the source project.
  */
 export async function runBootstrap(
   config: BootstrapConfig,
   repoRoot: string,
-  options: RunBootstrapOptions = {},
 ): Promise<RunBootstrapResult> {
   // ── CLI dependencies ──────────────────────────────────────────────
-  const tools = ["git", "kubectl", "helm"];
+  const tools = ["git", "kubectl", "helm", "sops", "age"];
   if (isMacOS() || isCI()) tools.push("k3d");
-  if (!options.skipSops) tools.push("sops", "age");
   log.step("Installing CLI dependencies");
   await ensureAll(tools);
+
+  // ── Git setup ─────────────────────────────────────────────────────
+  log.step("Configuring git");
+  if (!execSafe("git config user.email", { cwd: repoRoot }).stdout) {
+    exec('git config user.email "bootstrap@gitops.local"', { cwd: repoRoot });
+    exec('git config user.name "GitOps Bootstrap"', { cwd: repoRoot });
+  }
+  gitlab.configureGitCredentials(config.gitlabPat, repoRoot);
+
+  const currentBranch = execSafe("git branch --show-current", { cwd: repoRoot }).stdout;
+  if (currentBranch !== config.repoBranch) {
+    const { exitCode } = execSafe(
+      `git checkout "${config.repoBranch}"`,
+      { cwd: repoRoot },
+    );
+    if (exitCode !== 0) {
+      exec(`git checkout -b "${config.repoBranch}"`, { cwd: repoRoot });
+    }
+  }
 
   // ── Kubernetes cluster ─────────────────────────────────────────────
   log.step("Setting up Kubernetes cluster");
@@ -69,9 +87,15 @@ export async function runBootstrap(
   });
   log.success("flux-system secret created");
 
+  // ── Clone template if not present ─────────────────────────────────
+  const templateDir = `${repoRoot}/clusters/_default-template`;
+
+  if (!existsSync(templateDir)) {
+    await cloneTemplate(repoRoot);
+  }
+
   // ── Cluster template ──────────────────────────────────────────────
   const clusterDir = `${repoRoot}/clusters/${config.clusterName}`;
-  const templateDir = `${repoRoot}/clusters/_default-template`;
 
   if (existsSync(templateDir)) {
     log.step(`Configuring cluster template for '${config.clusterName}'`);
@@ -94,24 +118,19 @@ export async function runBootstrap(
       log.detail("Rendered cluster-sync.yaml with cluster vars");
     }
 
-    if (!options.skipComponentPruning) {
-      pruneDisabledComponents(clusterDir, config.selectedComponents);
-    }
+    pruneDisabledComponents(clusterDir, config.selectedComponents);
   }
 
   // ── SOPS encryption ───────────────────────────────────────────────
-  if (!options.skipSops) {
-    await setupSops(config, repoRoot, clusterDir);
-  }
+  await setupSops(config, repoRoot, clusterDir);
 
   // ── Git commit & push ─────────────────────────────────────────────
-  const commitMsg = options.skipSops
-    ? `Add ${config.clusterName} cluster`
-    : `Add ${config.clusterName} cluster with encrypted secrets`;
-
   await withSpinner("Committing and pushing to Git", async () => {
     await execAsync("git add .", { cwd: repoRoot });
-    execSafe(`git commit -m "${commitMsg}"`, { cwd: repoRoot });
+    execSafe(
+      `git commit -m "Add ${config.clusterName} cluster with encrypted secrets"`,
+      { cwd: repoRoot },
+    );
     await execAsync("git push", { cwd: repoRoot });
   });
 
@@ -131,6 +150,27 @@ export async function runBootstrap(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+async function cloneTemplate(repoRoot: string): Promise<void> {
+  const tmpDir = "/tmp/gitops-template";
+
+  await withSpinner("Cloning template repository", async () => {
+    execSafe(`rm -rf "${tmpDir}"`);
+    await execAsync(
+      `git clone --quiet "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${tmpDir}"`,
+    );
+
+    for (const entry of readdirSync(tmpDir)) {
+      if (entry === ".git") continue;
+      cpSync(`${tmpDir}/${entry}`, `${repoRoot}/${entry}`, {
+        recursive: true,
+        force: true,
+      });
+    }
+
+    execSafe(`rm -rf "${tmpDir}"`);
+  });
+}
 
 function envsubst(content: string, vars: Record<string, string>): string {
   return Object.entries(vars).reduce(

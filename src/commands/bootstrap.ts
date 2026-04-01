@@ -760,11 +760,6 @@ export async function bootstrap(): Promise<void> {
     selectedComponents,
   };
 
-  // ── Configure git credentials ────────────────────────────────────────
-  await runStep("Configuring git credentials", async () => {
-    gitlab.configureGitCredentials(fullConfig.gitlabPat, repoRoot);
-  });
-
   // ── Check macOS prerequisites ────────────────────────────────────────
   if (isMacOS()) {
     if (!commandExists("brew")) {
