@@ -11,16 +11,19 @@ import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { ensureAll } from "./dependencies.js";
+import { getProvider } from "./git-provider.js";
 import * as k8s from "./kubernetes.js";
 import * as flux from "./flux.js";
 import * as encryption from "./encryption.js";
 import {
   COMPONENTS,
   defaultSopsConfig,
+  shouldUseSshDeployKey,
   SOURCE_GITLAB_HOST,
   SOURCE_PROJECT_PATH,
   type BootstrapConfig,
 } from "../schemas.js";
+import { createGitHubDeployKey } from "./github.js";
 
 export interface RunBootstrapResult {
   fluxInstanceInstalled: boolean;
@@ -38,6 +41,8 @@ export async function runBootstrap(
   config: BootstrapConfig,
   repoRoot: string,
 ): Promise<RunBootstrapResult> {
+  const provider = await getProvider(config.gitProvider ?? "gitlab");
+
   // ── CLI dependencies ──────────────────────────────────────────────
   const tools = ["git", "kubectl", "helm", "sops", "age"];
   if (isMacOS() || isCI()) tools.push("k3d");
@@ -53,8 +58,12 @@ export async function runBootstrap(
   const { stdout: remoteUrl } = execSafe("git remote get-url origin", { cwd: repoRoot });
   if (remoteUrl) {
     const cleanUrl = remoteUrl.replace(/\/\/[^@]+@/, "//");
-    const authedUrl = cleanUrl.replace("//", `//oauth2:${config.gitlabPat}@`);
-    exec(`git remote set-url origin "${authedUrl}"`, { cwd: repoRoot });
+    const match = cleanUrl.match(/https:\/\/([^/]+)\/(.+?)(?:\.git)?$/);
+    if (match) {
+      const [, host, pathWithNs] = match;
+      const authedUrl = provider.getAuthRemoteUrl(host, pathWithNs, config.gitToken);
+      exec(`git remote set-url origin "${authedUrl}"`, { cwd: repoRoot });
+    }
   }
 
   const currentBranch = execSafe("git branch --show-current", { cwd: repoRoot }).stdout;
@@ -83,13 +92,27 @@ export async function runBootstrap(
   // ── Flux Operator ──────────────────────────────────────────────────
   await flux.installOperator();
 
-  // ── GitLab auth secret ─────────────────────────────────────────────
-  log.step("Creating GitLab auth secret");
-  await k8s.createSecret("flux-system", "flux-system", {
-    username: "git",
-    password: config.gitlabPat,
-  });
-  log.success("flux-system secret created");
+  // ── Git auth secret ────────────────────────────────────────────────
+  if (shouldUseSshDeployKey(config)) {
+    const gitHost = config.gitHost ?? "github.com";
+    log.step("Creating SSH deploy key for Flux");
+    const { privateKey, publicKey, knownHosts } = await createGitHubDeployKey(
+      config.repoOwner,
+      config.repoName,
+      gitHost,
+      config.gitToken,
+    );
+    await k8s.createSshSecret("flux-system", "flux-system", privateKey, publicKey, knownHosts);
+    log.success("flux-system SSH secret created (deploy key — never expires)");
+  } else {
+    const fluxToken = config.gitFluxToken || config.gitToken;
+    log.step("Creating Git auth secret");
+    await k8s.createSecret("flux-system", "flux-system", {
+      username: "git",
+      password: fluxToken,
+    });
+    log.success("flux-system secret created");
+  }
 
   // ── Clone template if not present ─────────────────────────────────
   const templateDir = `${repoRoot}/clusters/_default-template`;
