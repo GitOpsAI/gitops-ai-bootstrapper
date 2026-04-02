@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -18,8 +19,13 @@ import { execAsync, exec, commandExists } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { ensureAll } from "../core/dependencies.js";
 import { runBootstrap } from "../core/bootstrap-runner.js";
+import * as k8s from "../core/kubernetes.js";
 import * as flux from "../core/flux.js";
-import * as gitlab from "../core/gitlab.js";
+import {
+  getProvider,
+  type GitProvider,
+  type ProviderType,
+} from "../core/git-provider.js";
 import {
   COMPONENTS,
   REQUIRED_COMPONENT_IDS,
@@ -36,12 +42,29 @@ import {
   maskSecret,
   type WizardField,
 } from "../utils/wizard.js";
+import { loginAndCreateCloudflareToken } from "../core/cloudflare-oauth.js";
+
+// ---------------------------------------------------------------------------
+// Browser opener
+// ---------------------------------------------------------------------------
+
+function openUrl(url: string): void {
+  const cmd = isMacOS() ? "open" : "xdg-open";
+  try {
+    execSync(`${cmd} '${url}'`, { stdio: "ignore" });
+  } catch {
+    /* user will see the manual URL in the terminal */
+  }
+}
+
+const OPENAI_API_KEYS_URL = "https://platform.openai.com/api-keys";
 
 // ---------------------------------------------------------------------------
 // Wizard state
 // ---------------------------------------------------------------------------
 
 interface WizardState {
+  gitProvider: ProviderType;
   setupMode: "new" | "existing";
   manageDnsAndTls: boolean;
   selectedComponents: string[];
@@ -51,8 +74,10 @@ interface WizardState {
   repoLocalPath: string;
   repoOwner: string;
   repoBranch: string;
+  templateTag: string;
   letsencryptEmail: string;
-  gitlabPat: string;
+  gitToken: string;
+  gitFluxToken: string;
   cloudflareApiToken: string;
   openaiApiKey: string;
   openclawGatewayToken: string;
@@ -74,6 +99,42 @@ function openclawEnabled(state: WizardState): boolean {
 
 function componentLabel(id: string): string {
   return COMPONENTS.find((c) => c.id === id)?.label ?? id;
+}
+
+async function fetchTemplateTags(): Promise<string[]> {
+  const encoded = encodeURIComponent(SOURCE_PROJECT_PATH);
+  const url = `https://${SOURCE_GITLAB_HOST}/api/v4/projects/${encoded}/repository/tags?per_page=50&order_by=version&sort=desc`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const tags = (await res.json()) as { name: string }[];
+    return tags.map((t) => t.name);
+  } catch {
+    return [];
+  }
+}
+
+function providerLabel(type: ProviderType): string {
+  return type === "gitlab" ? "GitLab" : "GitHub";
+}
+
+async function enrichWithUser(
+  state: WizardState,
+  token: string,
+  provider: GitProvider,
+): Promise<WizardState> {
+  try {
+    const user = await provider.fetchCurrentUser(token, provider.defaultHost);
+    log.success(`Logged in as ${user.username}`);
+    return {
+      ...state,
+      gitToken: token,
+      repoOwner: state.repoOwner || user.username,
+    };
+  } catch (err) {
+    log.warn(`Could not detect ${providerLabel(state.gitProvider)} user: ${(err as Error).message}`);
+    return { ...state, gitToken: token };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,31 +179,147 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       ],
     },
 
-    // ── GitLab Repository ───────────────────────────────────────────────
+    // ── Git Provider ────────────────────────────────────────────────────
     {
-      id: "gitlabPat",
-      section: "GitLab Repository",
-      skip: (state) => !!state.gitlabPat,
+      id: "gitProvider",
+      section: "Git Provider",
+      skip: (state) => saved(state, "gitProvider"),
       run: async (state) => {
-        const v = await p.password({
-          message:
-            pc.bold("GitLab Personal Access Token (api, read_repository, write_repository)"),
-          validate: (v) => {
-            if (!v) return "Required";
-          },
+        const v = await p.select({
+          message: pc.bold("Which Git provider do you want to use?"),
+          options: [
+            {
+              value: "github",
+              label: "GitHub",
+              hint: "github.com or GitHub Enterprise",
+            },
+            {
+              value: "gitlab",
+              label: "GitLab",
+              hint: "gitlab.com or self-hosted",
+            },
+          ],
+          initialValue: state.gitProvider,
         });
         if (p.isCancel(v)) return back();
-        return { ...state, gitlabPat: v as string };
+        return { ...state, gitProvider: v as ProviderType };
       },
-      review: (state) => ["PAT", maskSecret(state.gitlabPat)],
+      review: (state) => ["Provider", providerLabel(state.gitProvider)],
+    },
+
+    // ── Git Repository ──────────────────────────────────────────────────
+    {
+      id: "gitToken",
+      section: "Git Repository",
+      skip: (state) => !!state.gitToken,
+      run: async (state) => {
+        const provider = await getProvider(state.gitProvider);
+
+        if (isCI()) {
+          const v = await p.password({
+            message: pc.bold(provider.tokenLabel),
+            validate: (v) => { if (!v) return "Required"; },
+          });
+          if (p.isCancel(v)) return back();
+          return { ...state, gitToken: v as string };
+        }
+
+        const method = await p.select({
+          message: pc.bold(`How would you like to authenticate with ${providerLabel(state.gitProvider)}?`),
+          options: [
+            {
+              value: "browser",
+              label: "Login with browser",
+              hint: `opens ${providerLabel(state.gitProvider)} in your browser — recommended`,
+            },
+            {
+              value: "pat",
+              label: "Paste a Personal Access Token",
+              hint: "manual token entry",
+            },
+          ],
+        });
+        if (p.isCancel(method)) return back();
+
+        if (method === "browser") {
+          try {
+            const token = await provider.loginWithBrowser(provider.defaultHost);
+            log.success("Authenticated via browser");
+            return await enrichWithUser(state, token, provider);
+          } catch (err) {
+            log.warn(`Browser login failed: ${(err as Error).message}`);
+            log.warn("Falling back to manual token entry");
+          }
+        }
+
+        const v = await p.password({
+          message: pc.bold(provider.tokenLabel),
+          validate: (v) => { if (!v) return "Required"; },
+        });
+        if (p.isCancel(v)) return back();
+        return await enrichWithUser(state, v as string, provider);
+      },
+      review: (state) => ["Token", maskSecret(state.gitToken)],
     },
     {
       id: "repoOwner",
-      section: "GitLab Repository",
-      skip: (state) => saved(state, "repoOwner"),
+      section: "Git Repository",
+      skip: (state) => !!state.repoOwner,
       run: async (state) => {
+        const provider = await getProvider(state.gitProvider);
+        const label = providerLabel(state.gitProvider);
+        const orgLabel = state.gitProvider === "gitlab" ? "group" : "org";
+
+        try {
+          const user = await provider.fetchCurrentUser(
+            state.gitToken,
+            provider.defaultHost,
+          );
+
+          let orgs: { fullPath: string; name: string }[] = [];
+          try {
+            orgs = await provider.fetchOrganizations(
+              state.gitToken,
+              provider.defaultHost,
+            );
+          } catch {
+            /* no orgs or insufficient permissions — continue with personal only */
+          }
+
+          const options: { value: string; label: string; hint?: string }[] = [
+            {
+              value: user.username,
+              label: user.username,
+              hint: `personal · ${user.name}`,
+            },
+            ...orgs.map((g) => ({
+              value: g.fullPath,
+              label: g.fullPath,
+              hint: orgLabel,
+            })),
+            {
+              value: "__manual__",
+              label: "Enter manually…",
+              hint: "type a namespace",
+            },
+          ];
+
+          const v = await p.select({
+            message: pc.bold(`${label} namespace for the repository`),
+            options,
+            initialValue: state.repoOwner || user.username,
+          });
+          if (p.isCancel(v)) return back();
+
+          if (v !== "__manual__") {
+            return { ...state, repoOwner: v as string };
+          }
+        } catch {
+          /* API unavailable — fall through to manual input */
+        }
+
         const v = await p.text({
-          message: pc.bold("GitLab repo owner / namespace (without @)"),
+          message: pc.bold(`${label} repo owner / namespace`),
           placeholder: "my-username-or-group",
           initialValue: state.repoOwner || undefined,
           validate: (v) => {
@@ -156,13 +333,59 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
     },
     {
       id: "repoName",
-      section: "GitLab Repository",
+      section: "Git Repository",
       skip: (state) => saved(state, "repoName"),
       run: async (state) => {
+        if (isNewRepo(state)) {
+          const v = await p.text({
+            message: pc.bold("New repository name"),
+            placeholder: "fluxcd_ai",
+            defaultValue: state.repoName,
+          });
+          if (p.isCancel(v)) return back();
+          return { ...state, repoName: v as string };
+        }
+
+        const provider = await getProvider(state.gitProvider);
+        try {
+          const projects = await provider.fetchNamespaceProjects(
+            state.gitToken,
+            provider.defaultHost,
+            state.repoOwner,
+          );
+          if (projects.length > 0) {
+            const options: { value: string; label: string; hint?: string }[] = [
+              ...projects.map((proj) => ({
+                value: proj.name,
+                label: proj.name,
+                hint: proj.description
+                  ? proj.description.slice(0, 60)
+                  : undefined,
+              })),
+              {
+                value: "__manual__",
+                label: "Enter manually…",
+                hint: "type a repo name",
+              },
+            ];
+
+            const v = await p.select({
+              message: pc.bold("Select repository"),
+              options,
+              initialValue: state.repoName || undefined,
+            });
+            if (p.isCancel(v)) return back();
+
+            if (v !== "__manual__") {
+              return { ...state, repoName: v as string };
+            }
+          }
+        } catch {
+          /* fall through to manual input */
+        }
+
         const v = await p.text({
-          message: isNewRepo(state)
-            ? pc.bold("New repository name")
-            : pc.bold("Flux GitLab repo name"),
+          message: pc.bold("Flux repo name"),
           placeholder: "fluxcd_ai",
           defaultValue: state.repoName,
         });
@@ -173,7 +396,7 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
     },
     {
       id: "repoLocalPath",
-      section: "GitLab Repository",
+      section: "Git Repository",
       hidden: (state) => !isNewRepo(state),
       skip: (state) => saved(state, "repoLocalPath"),
       run: async (state) => {
@@ -189,13 +412,11 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
     },
     {
       id: "repoBranch",
-      section: "GitLab Repository",
+      section: "Git Repository",
       skip: (state) => saved(state, "repoBranch"),
       run: async (state) => {
         const v = await p.text({
-          message: isNewRepo(state)
-            ? pc.bold("Template branch name to clone")
-            : pc.bold("Git branch for Flux"),
+          message: pc.bold("Git branch for Flux"),
           placeholder: "main",
           defaultValue: state.repoBranch,
         });
@@ -203,6 +424,50 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
         return { ...state, repoBranch: v as string };
       },
       review: (state) => ["Branch", state.repoBranch],
+    },
+    {
+      id: "templateTag",
+      section: "Git Repository",
+      hidden: (state) => !isNewRepo(state),
+      skip: (state) => saved(state, "templateTag"),
+      run: async (state) => {
+        const tags = await fetchTemplateTags();
+
+        if (tags.length > 0) {
+          const options: { value: string; label: string; hint?: string }[] = [
+            ...tags.map((tag, i) => ({
+              value: tag,
+              label: tag,
+              hint: i === 0 ? "latest" : undefined,
+            })),
+            {
+              value: "__manual__",
+              label: "Enter manually…",
+              hint: "type a tag or branch name",
+            },
+          ];
+
+          const v = await p.select({
+            message: pc.bold("Template version (tag) to clone"),
+            options,
+            initialValue: state.templateTag || tags[0],
+          });
+          if (p.isCancel(v)) return back();
+
+          if (v !== "__manual__") {
+            return { ...state, templateTag: v as string };
+          }
+        }
+
+        const v = await p.text({
+          message: pc.bold("Template tag or branch to clone"),
+          placeholder: "main",
+          defaultValue: state.templateTag || "main",
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, templateTag: v as string };
+      },
+      review: (state) => ["Template tag", state.templateTag],
     },
 
     // ── DNS & TLS ─────────────────────────────────────────────────────────
@@ -324,11 +589,45 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       hidden: (state) => !dnsAndTlsEnabled(state),
       skip: (state) => !!state.cloudflareApiToken,
       run: async (state) => {
+        if (isCI()) {
+          const v = await p.password({
+            message: pc.bold("Cloudflare API Token (DNS zone edit access)"),
+            validate: (v) => { if (!v) return "Required"; },
+          });
+          if (p.isCancel(v)) return back();
+          return { ...state, cloudflareApiToken: v as string };
+        }
+
+        const method = await p.select({
+          message: pc.bold("How would you like to authenticate with Cloudflare?"),
+          options: [
+            {
+              value: "browser",
+              label: "Login with browser",
+              hint: "OAuth login → auto-creates a scoped DNS token — recommended",
+            },
+            {
+              value: "pat",
+              label: "Paste an API Token",
+              hint: "manual token from dash.cloudflare.com",
+            },
+          ],
+        });
+        if (p.isCancel(method)) return back();
+
+        if (method === "browser") {
+          try {
+            const token = await loginAndCreateCloudflareToken(state.clusterDomain);
+            return { ...state, cloudflareApiToken: token };
+          } catch (err) {
+            log.warn(`Browser login failed: ${(err as Error).message}`);
+            log.warn("Falling back to manual token entry");
+          }
+        }
+
         const v = await p.password({
           message: pc.bold("Cloudflare API Token (DNS zone edit access)"),
-          validate: (v) => {
-            if (!v) return "Required";
-          },
+          validate: (v) => { if (!v) return "Required"; },
         });
         if (p.isCancel(v)) return back();
         return { ...state, cloudflareApiToken: v as string };
@@ -344,8 +643,27 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       hidden: (state) => !openclawEnabled(state),
       skip: (state) => !!state.openaiApiKey,
       run: async (state) => {
+        p.log.info("Opening the OpenAI dashboard to create an API key...");
+        p.log.info(
+          pc.dim(
+            `If the browser doesn't open, visit:\n${pc.cyan(OPENAI_API_KEYS_URL)}`,
+          ),
+        );
+        p.note(
+          `${pc.bold("Create an API key with these steps:")}\n\n` +
+            `  1. Log in to ${pc.cyan("platform.openai.com")}\n` +
+            `  2. Click ${pc.cyan("+ Create new secret key")}\n` +
+            `  3. Name it (e.g. ${pc.cyan("gitops-ai")})\n` +
+            `  4. Copy the key value\n\n` +
+            pc.dim("The key starts with sk-… and is only shown once."),
+          "OpenAI API Key",
+        );
+        p.log.info(pc.dim("Opening browser in 3 seconds…"));
+        await new Promise((r) => setTimeout(r, 3000));
+        openUrl(OPENAI_API_KEYS_URL);
+
         const v = await p.password({
-          message: pc.bold("OpenAI API Key (for AI components)"),
+          message: pc.bold("Paste the API key from the dashboard"),
           validate: (v) => {
             if (!v) return "Required";
           },
@@ -418,20 +736,26 @@ function resolveRepoRoot(): string {
 // ---------------------------------------------------------------------------
 
 async function createAndCloneRepo(wizard: WizardState): Promise<string> {
-  log.step("Authenticating with GitLab");
-  await gitlab.authenticate(wizard.gitlabPat, SOURCE_GITLAB_HOST);
+  const provider = await getProvider(wizard.gitProvider);
+  const label = providerLabel(wizard.gitProvider);
+  const host = provider.defaultHost;
+
+  log.step(`Authenticating with ${label}`);
+  await provider.authenticate(wizard.gitToken, host);
 
   log.step(`Resolving namespace '${wizard.repoOwner}'`);
-  const namespaceId = await gitlab.resolveNamespaceId(
+  const namespaceId = await provider.resolveNamespaceId(
     wizard.repoOwner,
-    SOURCE_GITLAB_HOST,
+    host,
+    wizard.gitToken,
   );
 
   log.step(`Creating project ${wizard.repoOwner}/${wizard.repoName}`);
-  const existing = await gitlab.getProject(
+  const existing = await provider.getProject(
     wizard.repoOwner,
     wizard.repoName,
-    SOURCE_GITLAB_HOST,
+    host,
+    wizard.gitToken,
   );
 
   let httpUrl: string;
@@ -457,8 +781,8 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
     pathWithNs = existing.pathWithNamespace;
     log.success(`Using existing: ${pathWithNs}`);
   } else {
-    const created = await withSpinner("Creating GitLab project", () =>
-      gitlab.createProject(wizard.repoName, namespaceId, SOURCE_GITLAB_HOST),
+    const created = await withSpinner(`Creating ${label} project`, () =>
+      provider.createProject(wizard.repoName, namespaceId, host, wizard.gitToken),
     );
     httpUrl = created.httpUrl;
     pathWithNs = created.pathWithNamespace;
@@ -485,15 +809,32 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
       exec(`git remote add origin "${httpUrl}"`, { cwd: cloneDir });
     }
   } else {
-    await withSpinner("Cloning template repository", () =>
-      execAsync(
-        `git clone --quiet --branch "${wizard.repoBranch}" "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
-      ),
-    );
+    const cloneRef = wizard.templateTag || "main";
+    let clonedRef = cloneRef;
+    try {
+      await withSpinner(`Cloning template (${cloneRef})`, () =>
+        execAsync(
+          `git clone --quiet --branch "${cloneRef}" "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
+        ),
+      );
+    } catch {
+      log.warn(`Tag/branch '${cloneRef}' not found — falling back to 'main'`);
+      clonedRef = "main";
+      await withSpinner("Cloning template (main)", () =>
+        execAsync(
+          `git clone --quiet --branch "main" "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
+        ),
+      );
+    }
+
+    if (clonedRef !== wizard.repoBranch) {
+      exec(`git checkout -B "${wizard.repoBranch}"`, { cwd: cloneDir });
+    }
+
     exec(`git remote set-url origin "${httpUrl}"`, { cwd: cloneDir });
   }
 
-  const authRemote = `https://oauth2:${wizard.gitlabPat}@${SOURCE_GITLAB_HOST}/${pathWithNs}.git`;
+  const authRemote = provider.getAuthRemoteUrl(host, pathWithNs, wizard.gitToken);
 
   await withSpinner(`Pushing to ${pathWithNs}`, () => {
     const forceFlag = repoExisted ? " --force" : "";
@@ -590,6 +931,43 @@ export async function bootstrap(): Promise<void> {
   }
   const prev = (saved ?? {}) as Record<string, string>;
 
+  // Backward compat: migrate gitlabPat → gitToken
+  if (prev.gitlabPat && !prev.gitToken) {
+    prev.gitToken = prev.gitlabPat;
+  }
+
+  // ── Check for existing cluster ──────────────────────────────────────
+  const existing = k8s.detectExistingClusters();
+  if (existing) {
+    const clusterList = existing.names
+      .map((n) => `  ${pc.cyan(n)}`)
+      .join("\n");
+    const deleteHint =
+      existing.type === "k3d"
+        ? `  ${pc.cyan(`k3d cluster delete ${existing.names[0]}`)}`
+        : `  ${pc.cyan("sudo /usr/local/bin/k3s-uninstall.sh")}`;
+
+    p.log.warn(
+      pc.yellow(`Existing ${existing.type} cluster(s) detected:`),
+    );
+    p.note(
+      `${pc.bold("Clusters found:")}\n${clusterList}\n\n` +
+      `Re-bootstrapping may overwrite existing resources.\n` +
+      `To start fresh, delete the cluster first:\n` +
+      deleteHint + `\n\n` +
+      pc.dim("Choose Continue to proceed anyway."),
+      "Cluster Already Exists",
+    );
+    const shouldContinue = await p.confirm({
+      message: pc.bold("Continue with the existing cluster?"),
+      initialValue: false,
+    });
+    if (p.isCancel(shouldContinue) || !shouldContinue) {
+      finish("Bootstrap cancelled — existing cluster left untouched");
+      return;
+    }
+  }
+
   // ── Detect public IP (silent) ────────────────────────────────────────
   let detectedIp = prev.clusterPublicIp ?? "";
   if (!detectedIp) {
@@ -614,6 +992,7 @@ export async function bootstrap(): Promise<void> {
       ];
 
   const initialState: WizardState = {
+    gitProvider: (prev.gitProvider as ProviderType) ?? "github",
     setupMode: (prev.setupMode as "new" | "existing") ?? "new",
     manageDnsAndTls: savedDnsTls,
     selectedComponents: savedComponents,
@@ -623,8 +1002,10 @@ export async function bootstrap(): Promise<void> {
     repoLocalPath: prev.repoLocalPath ?? "",
     repoOwner: prev.repoOwner ?? "",
     repoBranch: prev.repoBranch ?? "main",
+    templateTag: prev.templateTag ?? "",
     letsencryptEmail: prev.letsencryptEmail ?? "",
-    gitlabPat: prev.gitlabPat ?? "",
+    gitToken: prev.gitToken ?? "",
+    gitFluxToken: prev.gitFluxToken ?? "",
     cloudflareApiToken: prev.cloudflareApiToken ?? "",
     openaiApiKey: prev.openaiApiKey ?? "",
     openclawGatewayToken: prev.openclawGatewayToken ?? "",
@@ -636,6 +1017,7 @@ export async function bootstrap(): Promise<void> {
 
   // ── Save config ─────────────────────────────────────────────────────
   saveInstallPlan({
+    gitProvider: wizard.gitProvider,
     setupMode: wizard.setupMode,
     manageDnsAndTls: String(wizard.manageDnsAndTls),
     clusterName: wizard.clusterName,
@@ -643,11 +1025,13 @@ export async function bootstrap(): Promise<void> {
     clusterPublicIp: wizard.clusterPublicIp,
     letsencryptEmail: wizard.letsencryptEmail,
     ingressAllowedIps: wizard.ingressAllowedIps,
-    gitlabPat: wizard.gitlabPat,
+    gitToken: wizard.gitToken,
+    gitFluxToken: wizard.gitFluxToken,
     repoName: wizard.repoName,
     repoLocalPath: wizard.repoLocalPath,
     repoOwner: wizard.repoOwner,
     repoBranch: wizard.repoBranch,
+    templateTag: wizard.templateTag,
     cloudflareApiToken: wizard.cloudflareApiToken,
     openaiApiKey: wizard.openaiApiKey ?? "",
     openclawGatewayToken: wizard.openclawGatewayToken ?? "",
@@ -658,11 +1042,8 @@ export async function bootstrap(): Promise<void> {
   // ── Warn about CLI tools that will be installed ─────────────────────
   const toolDescriptions: [string, string][] = [
     ["git",            "Version control (repo operations)"],
-    ["jq",             "JSON processor (API responses)"],
-    ["glab",           "GitLab CLI (repo & auth management)"],
     ["kubectl",        "Kubernetes CLI (cluster management)"],
     ["helm",           "Kubernetes package manager (chart installs)"],
-    ["k9s",            "Terminal UI for Kubernetes (monitoring)"],
     ["flux-operator",  "FluxCD Operator CLI (GitOps reconciliation)"],
     ["sops",           "Mozilla SOPS (secret encryption)"],
     ["age",            "Age encryption (SOPS key backend)"],
@@ -694,12 +1075,12 @@ export async function bootstrap(): Promise<void> {
     pc.dim("─".repeat(60)) + "\n\n" +
     pc.bold("Why are these needed?\n") +
     pc.dim("These tools are used to create and manage your Kubernetes cluster,\n") +
-    pc.dim("deploy components via Helm/Flux, encrypt secrets, and interact with GitLab.\n\n") +
+    pc.dim(`deploy components via Helm/Flux, encrypt secrets, and interact with ${providerLabel(wizard.gitProvider)}.\n\n`) +
     pc.bold("How to uninstall later:\n") +
     (isMacOS()
       ? `  ${pc.cyan(`brew uninstall ${uninstallMac}`)}\n`
-      : `  ${pc.cyan("sudo rm -f /usr/local/bin/{kubectl,helm,k9s,flux-operator,sops,age,age-keygen}")}\n` +
-        `  ${pc.cyan("sudo apt remove -y glab jq git")}  ${pc.dim("(if installed via apt)")}\n`
+      : `  ${pc.cyan("sudo rm -f /usr/local/bin/{kubectl,helm,flux-operator,sops,age,age-keygen}")}\n` +
+        `  ${pc.cyan(`sudo apt remove -y git`)}  ${pc.dim("(if installed via apt)")}\n`
     ) +
     pc.dim("\nAlready-installed tools will be skipped. No system tools will be modified."),
     "Required CLI Tools",
@@ -743,12 +1124,14 @@ export async function bootstrap(): Promise<void> {
   const isOpenclawEnabled = openclawEnabled(wizard);
 
   const fullConfig: BootstrapConfig = {
+    gitProvider: wizard.gitProvider,
     clusterName: wizard.clusterName,
     clusterDomain: wizard.clusterDomain,
     clusterPublicIp: wizard.clusterPublicIp,
     letsencryptEmail: wizard.letsencryptEmail,
     ingressAllowedIps: wizard.ingressAllowedIps,
-    gitlabPat: wizard.gitlabPat,
+    gitToken: wizard.gitToken,
+    gitFluxToken: wizard.gitFluxToken || undefined,
     repoName: wizard.repoName,
     repoOwner: wizard.repoOwner,
     repoBranch: wizard.repoBranch,
@@ -833,8 +1216,19 @@ export async function bootstrap(): Promise<void> {
 
   const finalSteps = [
     `All HelmReleases may take ${pc.yellow("~5 minutes")} to become ready.`,
-    `Check status: ${pc.cyan("kubectl get helmreleases -A")} or ${pc.cyan("k9s -A")}`,
+    `Check status: ${pc.cyan("kubectl get helmreleases -A")}`,
   ];
+  if (!commandExists("k9s")) {
+    finalSteps.push(
+      `Install ${pc.bold("k9s")} for a terminal UI to monitor your cluster: ${
+        isMacOS()
+          ? pc.cyan("brew install derailed/k9s/k9s")
+          : pc.cyan("https://k9scli.io/topics/install/")
+      }`,
+    );
+  } else {
+    finalSteps.push(`Monitor your cluster: ${pc.cyan("k9s -A")}`);
+  }
   if (isOpenclawEnabled) {
     finalSteps.push(
       `Open OpenClaw at ${pc.cyan(`https://openclaw.${fullConfig.clusterDomain}`)}`,
