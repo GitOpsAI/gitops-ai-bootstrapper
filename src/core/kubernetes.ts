@@ -9,6 +9,44 @@ export function isClusterReachable(): boolean {
   return exitCode === 0;
 }
 
+export interface ExistingCluster {
+  type: "k3d" | "k3s";
+  names: string[];
+}
+
+export function detectExistingClusters(): ExistingCluster | null {
+  if (isMacOS() || isCI()) {
+    const names = listK3dClusters();
+    if (names.length > 0) return { type: "k3d", names };
+    return null;
+  }
+
+  if (k3sInstalled()) {
+    return { type: "k3s", names: ["k3s"] };
+  }
+
+  return null;
+}
+
+export function listK3dClusters(): string[] {
+  const { stdout, exitCode } = execSafe("k3d cluster list --no-headers 2>/dev/null");
+  if (exitCode !== 0 || !stdout.trim()) return [];
+  return stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+export function k3dClusterExists(clusterName: string): boolean {
+  return listK3dClusters().includes(clusterName);
+}
+
+export function k3sInstalled(): boolean {
+  const { exitCode } = execSafe("command -v k3s");
+  return exitCode === 0;
+}
+
 export async function createK3dCluster(clusterName: string): Promise<void> {
   const { stdout } = execSafe("k3d cluster list 2>/dev/null");
   if (stdout.includes(clusterName)) {
