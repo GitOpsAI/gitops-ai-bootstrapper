@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
@@ -6,6 +6,44 @@ import { KUBERNETES_VERSION } from "../schemas.js";
 
 export function isClusterReachable(): boolean {
   const { exitCode } = execSafe("kubectl cluster-info 2>/dev/null");
+  return exitCode === 0;
+}
+
+export interface ExistingCluster {
+  type: "k3d" | "k3s";
+  names: string[];
+}
+
+export function detectExistingClusters(): ExistingCluster | null {
+  if (isMacOS() || isCI()) {
+    const names = listK3dClusters();
+    if (names.length > 0) return { type: "k3d", names };
+    return null;
+  }
+
+  if (k3sInstalled()) {
+    return { type: "k3s", names: ["k3s"] };
+  }
+
+  return null;
+}
+
+export function listK3dClusters(): string[] {
+  const { stdout, exitCode } = execSafe("k3d cluster list --no-headers 2>/dev/null");
+  if (exitCode !== 0 || !stdout.trim()) return [];
+  return stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+export function k3dClusterExists(clusterName: string): boolean {
+  return listK3dClusters().includes(clusterName);
+}
+
+export function k3sInstalled(): boolean {
+  const { exitCode } = execSafe("command -v k3s");
   return exitCode === 0;
 }
 
@@ -115,4 +153,33 @@ export async function createSecretFromFile(
   const cmd = `kubectl create secret generic ${name} --namespace=${namespace} --from-file=${key}="${filePath}"`;
   log.detail(`kubectl create secret generic ${name} --namespace=${namespace} --from-file=${key}`);
   await execAsync(cmd);
+}
+
+export async function createSshSecret(
+  name: string,
+  namespace: string,
+  privateKey: string,
+  publicKey: string,
+  knownHosts: string,
+): Promise<void> {
+  const tmpDir = "/tmp/flux-ssh-secret";
+  mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    writeFileSync(`${tmpDir}/identity`, privateKey, { mode: 0o600 });
+    writeFileSync(`${tmpDir}/identity.pub`, publicKey);
+    writeFileSync(`${tmpDir}/known_hosts`, knownHosts);
+
+    const cmd = [
+      `kubectl create secret generic ${name}`,
+      `--namespace=${namespace}`,
+      `--from-file=identity="${tmpDir}/identity"`,
+      `--from-file=identity.pub="${tmpDir}/identity.pub"`,
+      `--from-file=known_hosts="${tmpDir}/known_hosts"`,
+    ].join(" ");
+    log.detail(`kubectl create secret generic ${name} --namespace=${namespace} (SSH)`);
+    await execAsync(cmd);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 }

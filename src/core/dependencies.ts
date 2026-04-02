@@ -95,24 +95,6 @@ const registry: Dependency[] = [
       ),
   },
   {
-    name: "jq",
-    check: () => commandExists("jq"),
-    installDarwin: () => runInstall("brew install jq"),
-    installLinux: () =>
-      runInstall(
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq > /dev/null",
-      ),
-  },
-  {
-    name: "glab",
-    check: () => commandExists("glab"),
-    installDarwin: () => runInstall("brew install glab"),
-    installLinux: () =>
-      runInstall(
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq glab > /dev/null",
-      ),
-  },
-  {
     name: "sops",
     check: () => commandExists("sops"),
     installDarwin: () => runInstall("brew install sops"),

@@ -90,6 +90,8 @@ fluxcd_ai/
 │           │   └── secret-cloudflare.yaml  # SOPS-encrypted
 │           ├── external-dns/           # DNS automation (if enabled)
 │           │   └── secret-cloudflare.yaml  # SOPS-encrypted
+│           ├── grafana-operator/        # Grafana dashboards & datasources (if monitoring enabled)
+│           ├── victoria-metrics-k8s-stack/ # Metrics collection & alerting (if monitoring enabled)
 │           ├── flux-web/               # Flux dashboard (if enabled)
 │           └── openclaw/               # AI gateway (if enabled)
 │               └── secret-openclaw-envs.yaml  # SOPS-encrypted

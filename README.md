@@ -112,15 +112,17 @@ npx gitops-ai openclaw-pair
 
 The bootstrap wizard lets you select which components to install:
 
-| Component                   | Required | Description                                  |
-|-----------------------------|----------|----------------------------------------------|
-| Helm Repositories           | Yes      | Shared Helm chart repos                      |
-| Ingress Nginx (external)    | Yes      | External HTTP/HTTPS ingress controller       |
-| Prometheus CRDs             | Yes      | Monitoring custom resource definitions       |
-| Cert Manager                | DNS/TLS  | Automatic TLS certificates via Let's Encrypt |
-| External DNS                | DNS/TLS  | Automatic DNS records in Cloudflare          |
-| Flux Web UI                 | No       | Web dashboard for Flux status                |
-| OpenClaw                    | No       | AI assistant gateway (requires OpenAI key)   |
+| Component                   | Required | Description                                        |
+|-----------------------------|----------|----------------------------------------------------|
+| Helm Repositories           | Yes      | Shared Helm chart repos                            |
+| Ingress Nginx (external)    | Yes      | External HTTP/HTTPS ingress controller             |
+| Prometheus CRDs             | Yes      | Monitoring custom resource definitions             |
+| Cert Manager                | DNS/TLS  | Automatic TLS certificates via Let's Encrypt       |
+| External DNS                | DNS/TLS  | Automatic DNS records in Cloudflare                |
+| Grafana Operator            | No       | Grafana dashboards and datasources via CRDs        |
+| Victoria Metrics Stack      | No       | Metrics collection, alerting and long-term storage |
+| Flux Web UI                 | No       | Web dashboard for Flux status                      |
+| OpenClaw                    | No       | AI assistant gateway (requires OpenAI key)         |
 
 Components marked **DNS/TLS** are automatically enabled when you opt into automatic DNS and TLS management during the wizard.
 

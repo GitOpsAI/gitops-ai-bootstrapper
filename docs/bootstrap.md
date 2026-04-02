@@ -17,36 +17,46 @@ Choose between two paths:
 - **Init a new gitops repo** -- the CLI clones the [template repository](https://gitlab.com/everythings-gonna-be-alright/fluxcd_ai_template), creates a new GitLab project under your namespace, and pushes the template as your starting point.
 - **I already have a repo** -- use an existing GitOps repository (e.g. one you previously bootstrapped or cloned manually).
 
-### 2. GitLab Repository
+### 2. GitLab Authentication
 
-- **GitLab PAT** -- your personal access token (masked input). See [Prerequisites](prerequisites.md#1-gitlab-personal-access-token).
-- **Repo owner / namespace** -- the GitLab user or group that will own the project (e.g. `my-username`).
-- **Repo name** -- name for the new or existing project (default: `fluxcd_ai`).
+Two options for authenticating with GitLab:
+
+- **Login with browser** (recommended) -- opens GitLab in your browser for OAuth2 authorization. Uses the standard Authorization Code flow with PKCE, exactly like Vercel's GitLab integration. After you click "Authorize", the token is received automatically — no copy-pasting required. The CLI then auto-detects your username and lists your namespaces and repositories.
+- **Paste a Personal Access Token** -- manual fallback for environments without a browser (CI, SSH). Requires a token with `api`, `read_repository`, and `write_repository` scopes.
+
+After authentication, a **Project Access Token** (`flux-gitops`) is automatically created for the selected repository via the GitLab API. This token is scoped to `read_repository` + `write_repository` with Developer access and expires in 1 year. It replaces the short-lived OAuth session token for all downstream operations (git push, Flux K8s secret), so Flux credentials remain valid long after the bootstrap completes.
+
+### 3. GitLab Repository
+
+- **Repo owner / namespace** -- auto-detected from your GitLab account. Shows your personal namespace and any groups you have access to. You can also enter a namespace manually.
+- **Repo name** -- name for the new or existing project (default: `fluxcd_ai`). In "existing repo" mode, lists your repositories for selection.
 - **Local clone path** -- where to clone the repo on disk (new repo mode only).
 - **Branch** -- the Git branch Flux will track (default: `main`).
 
-### 3. DNS & TLS
+### 4. DNS & TLS
 
 A yes/no prompt:
 
 - **Yes** -- enables Cert Manager (automatic Let's Encrypt TLS) and External DNS (automatic Cloudflare DNS records). Requires a Cloudflare API token.
 - **No** -- skips DNS automation. Services are accessible via IP and you manage DNS/TLS manually. The CLI offers to add entries to `/etc/hosts` at the end.
 
-### 4. Components
+### 5. Components
 
 A multi-select menu for optional components. Required components (Helm Repositories, Ingress Nginx, Prometheus CRDs) are always included. You can toggle:
 
+- **Grafana Operator** -- Grafana dashboards and datasources managed via Kubernetes CRDs
+- **Victoria Metrics Stack** -- Prometheus-compatible metrics collection, alerting, and long-term storage
 - **Flux Web UI** -- web dashboard showing Flux reconciliation status
 - **OpenClaw** -- AI assistant gateway (requires an OpenAI API key)
 
 DNS/TLS components (Cert Manager, External DNS) are added automatically based on your choice in step 3.
 
-### 5. Cluster
+### 6. Cluster
 
 - **Cluster name** -- a human-readable name (default: `homelab`). Used as the k3d/k3s cluster name and the directory name under `clusters/`.
 - **Cluster domain** -- the DNS domain for your services (e.g. `homelab.click`). Components with subdomains will be accessible at `<subdomain>.<domain>`.
 
-### 6. Credentials & Secrets
+### 7. Credentials & Secrets
 
 Prompted conditionally based on your selections:
 
@@ -54,7 +64,7 @@ Prompted conditionally based on your selections:
 - **Cloudflare API Token** -- shown if DNS/TLS is enabled. Encrypted with SOPS before commit.
 - **OpenAI API Key** -- shown if OpenClaw is selected. Encrypted with SOPS before commit.
 
-### 7. Network
+### 8. Network
 
 - **Allowed IPs** -- CIDR ranges allowed to access the ingress controller (default: `0.0.0.0/0`).
 - **Cluster public IP** -- the IP that DNS records point to. Auto-detected via `ifconfig.me` for public setups; defaults to `127.0.0.1` when DNS management is disabled.
@@ -69,11 +79,12 @@ Once you confirm, the bootstrap proceeds through these automated phases:
 
 ### Phase 1: Repository Setup (new repo mode)
 
-1. Authenticates with GitLab using `glab`
+1. Authenticates with GitLab via API (OAuth or PAT)
 2. Resolves the target namespace ID
 3. Creates a new GitLab project (or reuses an existing one)
-4. Clones the template repository locally
-5. Sets `origin` to your new project and pushes
+4. Creates a Project Access Token (`flux-gitops`) for long-lived Flux access
+5. Clones the template repository locally
+6. Sets `origin` to your new project and pushes
 
 ### Phase 2: Dependencies
 
@@ -86,7 +97,7 @@ Installs missing CLI tools automatically:
 | `k9s` | Homebrew | curl |
 | `flux-operator` | Homebrew | curl |
 | `k3d` | Homebrew | curl (macOS and CI only) |
-| `git`, `jq`, `glab` | Homebrew | apt |
+| `git` | Homebrew | apt |
 | `sops`, `age` | Homebrew | apt / curl |
 
 ### Phase 3: Kubernetes Cluster
@@ -98,7 +109,7 @@ Sets up kubeconfig and waits for the cluster to become ready.
 
 ### Phase 4: Flux Operator
 
-Installs the Flux Operator via its OCI Helm chart into the `flux-system` namespace. Creates a Kubernetes secret with your GitLab credentials so Flux can pull from your private repo.
+Installs the Flux Operator via its OCI Helm chart into the `flux-system` namespace. Creates a Kubernetes secret with the Project Access Token so Flux can pull from your private repo. Since this token is scoped to the specific project with a 1-year expiry, Flux retains access long after the bootstrap session ends.
 
 ### Phase 5: Cluster Template
 
