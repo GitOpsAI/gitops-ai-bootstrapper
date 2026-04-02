@@ -76,14 +76,17 @@ export const COMPONENTS: ComponentDef[] = [
   { id: "cert-manager", label: "Cert Manager", hint: "Automatic TLS certificates via Let's Encrypt", required: false, secrets: ["secret-cloudflare.yaml"] },
   { id: "external-dns", label: "External DNS", hint: "Automatic DNS records in Cloudflare", required: false, secrets: ["secret-cloudflare.yaml"] },
   { id: "prometheus-operator-crds", label: "Prometheus CRDs", hint: "Monitoring custom resource definitions", required: true },
+  { id: "grafana-operator", label: "Grafana Operator", hint: "Grafana dashboards and datasources via CRDs", required: false, subdomain: "grafana" },
+  { id: "victoria-metrics-k8s-stack", label: "Victoria Metrics Stack", hint: "Metrics collection, alerting and long-term storage", required: false, subdomain: "victoria" },
   { id: "flux-web", label: "Flux Web UI", hint: "Web dashboard for Flux status", required: false, subdomain: "flux" },
   { id: "openclaw", label: "OpenClaw", hint: "AI assistant gateway (requires OpenAI key)", required: false, secrets: ["secret-openclaw-envs.yaml"], subdomain: "openclaw" },
 ];
 
 export const REQUIRED_COMPONENT_IDS = COMPONENTS.filter((c) => c.required).map((c) => c.id);
 export const DNS_TLS_COMPONENT_IDS = ["cert-manager", "external-dns"];
+export const MONITORING_COMPONENT_IDS = ["grafana-operator", "victoria-metrics-k8s-stack"];
 export const OPTIONAL_COMPONENTS = COMPONENTS.filter(
-  (c) => !c.required && !DNS_TLS_COMPONENT_IDS.includes(c.id),
+  (c) => !c.required && !DNS_TLS_COMPONENT_IDS.includes(c.id) && !MONITORING_COMPONENT_IDS.includes(c.id),
 );
 
 // ---------------------------------------------------------------------------

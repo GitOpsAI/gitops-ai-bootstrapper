@@ -44,6 +44,8 @@ A yes/no prompt:
 
 A multi-select menu for optional components. Required components (Helm Repositories, Ingress Nginx, Prometheus CRDs) are always included. You can toggle:
 
+- **Grafana Operator** -- Grafana dashboards and datasources managed via Kubernetes CRDs
+- **Victoria Metrics Stack** -- Prometheus-compatible metrics collection, alerting, and long-term storage
 - **Flux Web UI** -- web dashboard showing Flux reconciliation status
 - **OpenClaw** -- AI assistant gateway (requires an OpenAI API key)
 
