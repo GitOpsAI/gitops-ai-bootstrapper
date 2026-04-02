@@ -30,6 +30,7 @@ import {
   COMPONENTS,
   REQUIRED_COMPONENT_IDS,
   DNS_TLS_COMPONENT_IDS,
+  MONITORING_COMPONENT_IDS,
   OPTIONAL_COMPONENTS,
   SOURCE_GITLAB_HOST,
   SOURCE_PROJECT_PATH,
@@ -499,26 +500,49 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       section: "Components",
       skip: (state) => saved(state, "selectedComponents"),
       run: async (state) => {
+        const MONITORING_GROUP_ID = "__monitoring__";
+        const monitoringOption = {
+          value: MONITORING_GROUP_ID,
+          label: "Monitoring Stack",
+          hint: "Victoria Metrics + Grafana Operator (dashboards, alerting, metrics)",
+        };
+
+        const hasMonitoring = MONITORING_COMPONENT_IDS.every((id) =>
+          state.selectedComponents.includes(id),
+        );
+
         const selected = await p.multiselect({
           message: pc.bold("Optional components to install"),
-          options: OPTIONAL_COMPONENTS.map((c) => ({
-            value: c.id,
-            label: c.label,
-            hint: c.hint,
-          })),
-          initialValues: state.selectedComponents.filter((id) =>
-            OPTIONAL_COMPONENTS.some((c) => c.id === id),
-          ),
+          options: [
+            monitoringOption,
+            ...OPTIONAL_COMPONENTS.map((c) => ({
+              value: c.id,
+              label: c.label,
+              hint: c.hint,
+            })),
+          ],
+          initialValues: [
+            ...(hasMonitoring ? [MONITORING_GROUP_ID] : []),
+            ...state.selectedComponents.filter((id) =>
+              OPTIONAL_COMPONENTS.some((c) => c.id === id),
+            ),
+          ],
           required: false,
         });
         if (p.isCancel(selected)) return back();
+
+        const picks = selected as string[];
+        const monitoringIds = picks.includes(MONITORING_GROUP_ID) ? MONITORING_COMPONENT_IDS : [];
+        const otherIds = picks.filter((id) => id !== MONITORING_GROUP_ID);
         const dnsTlsIds = state.manageDnsAndTls ? DNS_TLS_COMPONENT_IDS : [];
+
         return {
           ...state,
           selectedComponents: [
             ...REQUIRED_COMPONENT_IDS,
             ...dnsTlsIds,
-            ...(selected as string[]),
+            ...monitoringIds,
+            ...otherIds,
           ],
         };
       },
@@ -643,30 +667,51 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       hidden: (state) => !openclawEnabled(state),
       skip: (state) => !!state.openaiApiKey,
       run: async (state) => {
-        p.log.info("Opening the OpenAI dashboard to create an API key...");
-        p.log.info(
-          pc.dim(
-            `If the browser doesn't open, visit:\n${pc.cyan(OPENAI_API_KEYS_URL)}`,
-          ),
-        );
-        p.note(
-          `${pc.bold("Create an API key with these steps:")}\n\n` +
-            `  1. Log in to ${pc.cyan("platform.openai.com")}\n` +
-            `  2. Click ${pc.cyan("+ Create new secret key")}\n` +
-            `  3. Name it (e.g. ${pc.cyan("gitops-ai")})\n` +
-            `  4. Copy the key value\n\n` +
-            pc.dim("The key starts with sk-… and is only shown once."),
-          "OpenAI API Key",
-        );
-        p.log.info(pc.dim("Opening browser in 3 seconds…"));
-        await new Promise((r) => setTimeout(r, 3000));
-        openUrl(OPENAI_API_KEYS_URL);
+        if (isCI()) {
+          const v = await p.password({
+            message: pc.bold("OpenAI API Key"),
+            validate: (v) => { if (!v) return "Required"; },
+          });
+          if (p.isCancel(v)) return back();
+          const openclawGatewayToken =
+            state.openclawGatewayToken || exec("openssl rand -hex 32");
+          return { ...state, openaiApiKey: v as string, openclawGatewayToken };
+        }
+
+        const method = await p.select({
+          message: pc.bold("How would you like to provide your OpenAI API key?"),
+          options: [
+            {
+              value: "browser",
+              label: "Open dashboard in browser",
+              hint: "opens platform.openai.com to create a key — recommended",
+            },
+            {
+              value: "paste",
+              label: "Paste an API Key",
+              hint: "manual key entry",
+            },
+          ],
+        });
+        if (p.isCancel(method)) return back();
+
+        if (method === "browser") {
+          p.note(
+            `${pc.bold("Create an API key with these steps:")}\n\n` +
+              `  1. Log in to ${pc.cyan("platform.openai.com")}\n` +
+              `  2. Click ${pc.cyan("+ Create new secret key")}\n` +
+              `  3. Name it (e.g. ${pc.cyan("gitops-ai")})\n` +
+              `  4. Copy the key value\n\n` +
+              pc.dim("The key starts with sk-… and is only shown once."),
+            "OpenAI API Key",
+          );
+          p.log.info(pc.dim("Opening browser…"));
+          openUrl(OPENAI_API_KEYS_URL);
+        }
 
         const v = await p.password({
-          message: pc.bold("Paste the API key from the dashboard"),
-          validate: (v) => {
-            if (!v) return "Required";
-          },
+          message: pc.bold("Paste the OpenAI API key"),
+          validate: (v) => { if (!v) return "Required"; },
         });
         if (p.isCancel(v)) return back();
         const openclawGatewayToken =
@@ -1228,6 +1273,16 @@ export async function bootstrap(): Promise<void> {
     );
   } else {
     finalSteps.push(`Monitor your cluster: ${pc.cyan("k9s -A")}`);
+  }
+  if (selectedComponents.includes("grafana-operator")) {
+    finalSteps.push(
+      `Grafana dashboard: ${pc.cyan(`https://grafana.${fullConfig.clusterDomain}`)}`,
+    );
+  }
+  if (selectedComponents.includes("victoria-metrics-k8s-stack")) {
+    finalSteps.push(
+      `Victoria Metrics: ${pc.cyan(`https://victoria.${fullConfig.clusterDomain}`)}`,
+    );
   }
   if (isOpenclawEnabled) {
     finalSteps.push(
