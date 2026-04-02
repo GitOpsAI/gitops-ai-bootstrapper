@@ -20,6 +20,7 @@ import { ensureAll } from "../core/dependencies.js";
 import { runBootstrap } from "../core/bootstrap-runner.js";
 import * as flux from "../core/flux.js";
 import * as gitlab from "../core/gitlab.js";
+import { loginWithBrowser } from "../core/gitlab-oauth.js";
 import {
   COMPONENTS,
   REQUIRED_COMPONENT_IDS,
@@ -76,6 +77,24 @@ function componentLabel(id: string): string {
   return COMPONENTS.find((c) => c.id === id)?.label ?? id;
 }
 
+async function enrichWithUser(
+  state: WizardState,
+  token: string,
+): Promise<WizardState> {
+  try {
+    const user = await gitlab.fetchCurrentUser(token, SOURCE_GITLAB_HOST);
+    log.success(`Logged in as ${user.username}`);
+    return {
+      ...state,
+      gitlabPat: token,
+      repoOwner: state.repoOwner || user.username,
+    };
+  } catch (err) {
+    log.warn(`Could not detect GitLab user: ${(err as Error).message}`);
+    return { ...state, gitlabPat: token };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wizard field definitions (Esc / Ctrl+C = go back one field)
 // ---------------------------------------------------------------------------
@@ -124,25 +143,107 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       section: "GitLab Repository",
       skip: (state) => !!state.gitlabPat,
       run: async (state) => {
+        if (isCI()) {
+          const v = await p.password({
+            message: pc.bold("GitLab Personal Access Token (api, read_repository, write_repository)"),
+            validate: (v) => { if (!v) return "Required"; },
+          });
+          if (p.isCancel(v)) return back();
+          return { ...state, gitlabPat: v as string };
+        }
+
+        const method = await p.select({
+          message: pc.bold("How would you like to authenticate with GitLab?"),
+          options: [
+            {
+              value: "browser",
+              label: "Login with browser",
+              hint: "opens GitLab in your browser — recommended",
+            },
+            {
+              value: "pat",
+              label: "Paste a Personal Access Token",
+              hint: "manual token entry",
+            },
+          ],
+        });
+        if (p.isCancel(method)) return back();
+
+        if (method === "browser") {
+          try {
+            const token = await loginWithBrowser(SOURCE_GITLAB_HOST);
+            log.success("Authenticated via browser");
+            return await enrichWithUser(state, token);
+          } catch (err) {
+            log.warn(`Browser login failed: ${(err as Error).message}`);
+            log.warn("Falling back to manual token entry");
+          }
+        }
+
         const v = await p.password({
-          message:
-            pc.bold("GitLab Personal Access Token (api, read_repository, write_repository)"),
-          validate: (v) => {
-            if (!v) return "Required";
-          },
+          message: pc.bold("GitLab Personal Access Token (api, read_repository, write_repository)"),
+          validate: (v) => { if (!v) return "Required"; },
         });
         if (p.isCancel(v)) return back();
-        return { ...state, gitlabPat: v as string };
+        return await enrichWithUser(state, v as string);
       },
-      review: (state) => ["PAT", maskSecret(state.gitlabPat)],
+      review: (state) => ["Token", maskSecret(state.gitlabPat)],
     },
     {
       id: "repoOwner",
       section: "GitLab Repository",
-      skip: (state) => saved(state, "repoOwner"),
+      skip: (state) => !!state.repoOwner,
       run: async (state) => {
+        try {
+          const user = await gitlab.fetchCurrentUser(
+            state.gitlabPat,
+            SOURCE_GITLAB_HOST,
+          );
+
+          let groups: gitlab.GitLabGroup[] = [];
+          try {
+            groups = await gitlab.fetchGroups(
+              state.gitlabPat,
+              SOURCE_GITLAB_HOST,
+            );
+          } catch {
+            /* no groups or insufficient permissions — continue with personal only */
+          }
+
+          const options: { value: string; label: string; hint?: string }[] = [
+            {
+              value: user.username,
+              label: user.username,
+              hint: `personal · ${user.name}`,
+            },
+            ...groups.map((g) => ({
+              value: g.full_path,
+              label: g.full_path,
+              hint: "group",
+            })),
+            {
+              value: "__manual__",
+              label: "Enter manually…",
+              hint: "type a namespace",
+            },
+          ];
+
+          const v = await p.select({
+            message: pc.bold("GitLab namespace for the repository"),
+            options,
+            initialValue: state.repoOwner || user.username,
+          });
+          if (p.isCancel(v)) return back();
+
+          if (v !== "__manual__") {
+            return { ...state, repoOwner: v as string };
+          }
+        } catch {
+          /* API unavailable — fall through to manual input */
+        }
+
         const v = await p.text({
-          message: pc.bold("GitLab repo owner / namespace (without @)"),
+          message: pc.bold("GitLab repo owner / namespace"),
           placeholder: "my-username-or-group",
           initialValue: state.repoOwner || undefined,
           validate: (v) => {
@@ -159,10 +260,55 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       section: "GitLab Repository",
       skip: (state) => saved(state, "repoName"),
       run: async (state) => {
+        if (isNewRepo(state)) {
+          const v = await p.text({
+            message: pc.bold("New repository name"),
+            placeholder: "fluxcd_ai",
+            defaultValue: state.repoName,
+          });
+          if (p.isCancel(v)) return back();
+          return { ...state, repoName: v as string };
+        }
+
+        try {
+          const projects = await gitlab.fetchNamespaceProjects(
+            state.gitlabPat,
+            SOURCE_GITLAB_HOST,
+            state.repoOwner,
+          );
+          if (projects.length > 0) {
+            const options: { value: string; label: string; hint?: string }[] = [
+              ...projects.map((proj) => ({
+                value: proj.name,
+                label: proj.name,
+                hint: proj.description
+                  ? proj.description.slice(0, 60)
+                  : undefined,
+              })),
+              {
+                value: "__manual__",
+                label: "Enter manually…",
+                hint: "type a repo name",
+              },
+            ];
+
+            const v = await p.select({
+              message: pc.bold("Select repository"),
+              options,
+              initialValue: state.repoName || undefined,
+            });
+            if (p.isCancel(v)) return back();
+
+            if (v !== "__manual__") {
+              return { ...state, repoName: v as string };
+            }
+          }
+        } catch {
+          /* fall through to manual input */
+        }
+
         const v = await p.text({
-          message: isNewRepo(state)
-            ? pc.bold("New repository name")
-            : pc.bold("Flux GitLab repo name"),
+          message: pc.bold("Flux GitLab repo name"),
           placeholder: "fluxcd_ai",
           defaultValue: state.repoName,
         });
@@ -425,6 +571,7 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
   const namespaceId = await gitlab.resolveNamespaceId(
     wizard.repoOwner,
     SOURCE_GITLAB_HOST,
+    wizard.gitlabPat,
   );
 
   log.step(`Creating project ${wizard.repoOwner}/${wizard.repoName}`);
@@ -432,6 +579,7 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
     wizard.repoOwner,
     wizard.repoName,
     SOURCE_GITLAB_HOST,
+    wizard.gitlabPat,
   );
 
   let httpUrl: string;
@@ -458,11 +606,31 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
     log.success(`Using existing: ${pathWithNs}`);
   } else {
     const created = await withSpinner("Creating GitLab project", () =>
-      gitlab.createProject(wizard.repoName, namespaceId, SOURCE_GITLAB_HOST),
+      gitlab.createProject(wizard.repoName, namespaceId, SOURCE_GITLAB_HOST, wizard.gitlabPat),
     );
     httpUrl = created.httpUrl;
     pathWithNs = created.pathWithNamespace;
     log.success(`Created: ${pathWithNs}`);
+  }
+
+  // Create a long-lived Project Access Token for Flux (replaces short-lived OAuth token)
+  const projectId = existing?.id ?? (await gitlab.getProject(
+    wizard.repoOwner, wizard.repoName, SOURCE_GITLAB_HOST, wizard.gitlabPat,
+  ))!.id;
+
+  log.step("Creating project access token for Flux");
+  try {
+    await gitlab.revokeProjectAccessTokens(
+      projectId, wizard.gitlabPat, SOURCE_GITLAB_HOST, "flux-gitops",
+    );
+    const pat = await gitlab.createProjectAccessToken(
+      projectId, wizard.gitlabPat, SOURCE_GITLAB_HOST,
+    );
+    wizard.gitlabPat = pat.token;
+    log.success(`Project access token created (expires ${pat.expires_at})`);
+  } catch (err) {
+    log.warn(`Could not create project access token: ${(err as Error).message}`);
+    log.warn("Using OAuth token — Flux credentials will expire in ~2 hours");
   }
 
   const cloneDir = wizard.repoLocalPath || wizard.repoName;
@@ -658,8 +826,6 @@ export async function bootstrap(): Promise<void> {
   // ── Warn about CLI tools that will be installed ─────────────────────
   const toolDescriptions: [string, string][] = [
     ["git",            "Version control (repo operations)"],
-    ["jq",             "JSON processor (API responses)"],
-    ["glab",           "GitLab CLI (repo & auth management)"],
     ["kubectl",        "Kubernetes CLI (cluster management)"],
     ["helm",           "Kubernetes package manager (chart installs)"],
     ["k9s",            "Terminal UI for Kubernetes (monitoring)"],
@@ -699,7 +865,7 @@ export async function bootstrap(): Promise<void> {
     (isMacOS()
       ? `  ${pc.cyan(`brew uninstall ${uninstallMac}`)}\n`
       : `  ${pc.cyan("sudo rm -f /usr/local/bin/{kubectl,helm,k9s,flux-operator,sops,age,age-keygen}")}\n` +
-        `  ${pc.cyan("sudo apt remove -y glab jq git")}  ${pc.dim("(if installed via apt)")}\n`
+        `  ${pc.cyan("sudo apt remove -y git")}  ${pc.dim("(if installed via apt)")}\n`
     ) +
     pc.dim("\nAlready-installed tools will be skipped. No system tools will be modified."),
     "Required CLI Tools",
