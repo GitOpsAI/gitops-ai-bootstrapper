@@ -2,7 +2,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execSafe } from "../src/utils/shell.js";
 import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
-import { COMPONENTS, type BootstrapConfig } from "../src/schemas.js";
+import { COMPONENTS, type BootstrapConfig, type ProviderType } from "../src/schemas.js";
 
 const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
 
@@ -10,12 +10,13 @@ const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
 // CI environment
 // ---------------------------------------------------------------------------
 
+const GIT_PROVIDER = (process.env.GIT_PROVIDER ?? "gitlab") as ProviderType;
 const CI_PIPELINE_ID = process.env.CI_PIPELINE_ID ?? "local";
-const CI_SERVER_HOST = process.env.CI_SERVER_HOST ?? "gitlab.com";
+const CI_SERVER_HOST = process.env.CI_SERVER_HOST ?? (GIT_PROVIDER === "github" ? "github.com" : "gitlab.com");
 const CI_PROJECT_PATH = process.env.CI_PROJECT_PATH ?? "";
 const CI_PROJECT_NAME = process.env.CI_PROJECT_NAME ?? "";
 const CI_PROJECT_NAMESPACE = process.env.CI_PROJECT_NAMESPACE ?? "";
-const GITLAB_PAT = process.env.GITLAB_PAT ?? "";
+const GIT_TOKEN = process.env.GIT_TOKEN ?? process.env.GITLAB_PAT ?? process.env.GITHUB_TOKEN ?? "";
 
 const SOURCE_BRANCH = `ci-test-${CI_PIPELINE_ID}`;
 const CLUSTER_NAME = "ci-test";
@@ -40,7 +41,10 @@ async function waitForDocker(timeoutMs = 60_000): Promise<void> {
 }
 
 function remoteUrl(): string {
-  return `https://oauth2:${GITLAB_PAT}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git`;
+  if (GIT_PROVIDER === "github") {
+    return `https://x-access-token:${GIT_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git`;
+  }
+  return `https://oauth2:${GIT_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git`;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,12 +59,13 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     log("Running bootstrap");
     result = await runBootstrap(
       {
+        gitProvider: GIT_PROVIDER,
         clusterName: CLUSTER_NAME,
         clusterDomain: "example.com",
         clusterPublicIp: "127.0.0.1",
         letsencryptEmail: "ci@example.com",
         ingressAllowedIps: "0.0.0.0/0",
-        gitlabPat: GITLAB_PAT,
+        gitToken: GIT_TOKEN,
         repoName: CI_PROJECT_NAME,
         repoOwner: CI_PROJECT_NAMESPACE,
         repoBranch: SOURCE_BRANCH,

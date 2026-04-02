@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
@@ -115,4 +115,33 @@ export async function createSecretFromFile(
   const cmd = `kubectl create secret generic ${name} --namespace=${namespace} --from-file=${key}="${filePath}"`;
   log.detail(`kubectl create secret generic ${name} --namespace=${namespace} --from-file=${key}`);
   await execAsync(cmd);
+}
+
+export async function createSshSecret(
+  name: string,
+  namespace: string,
+  privateKey: string,
+  publicKey: string,
+  knownHosts: string,
+): Promise<void> {
+  const tmpDir = "/tmp/flux-ssh-secret";
+  mkdirSync(tmpDir, { recursive: true });
+
+  try {
+    writeFileSync(`${tmpDir}/identity`, privateKey, { mode: 0o600 });
+    writeFileSync(`${tmpDir}/identity.pub`, publicKey);
+    writeFileSync(`${tmpDir}/known_hosts`, knownHosts);
+
+    const cmd = [
+      `kubectl create secret generic ${name}`,
+      `--namespace=${namespace}`,
+      `--from-file=identity="${tmpDir}/identity"`,
+      `--from-file=identity.pub="${tmpDir}/identity.pub"`,
+      `--from-file=known_hosts="${tmpDir}/known_hosts"`,
+    ].join(" ");
+    log.detail(`kubectl create secret generic ${name} --namespace=${namespace} (SSH)`);
+    await execAsync(cmd);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
