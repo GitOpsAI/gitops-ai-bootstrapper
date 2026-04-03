@@ -23,6 +23,9 @@ typecheck:
 test-template-sync:
   stage: test
   image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  variables:
+    # Deterministic branch name in CI (avoids ambiguous remote HEAD / default-branch quirks)
+    GIT_TEST_BRANCH: "ci-$CI_PIPELINE_ID"
   before_script:
     - apk add --no-cache git
     - git config --global user.email "ci@test.local"

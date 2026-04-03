@@ -25,6 +25,15 @@ const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TMP_BASE = join(PROJECT_ROOT, ".test-tmp");
 mkdirSync(TMP_BASE, { recursive: true });
 
+/**
+ * Branch used in git integration tests. In GitLab CI, `ci-<pipeline_id>` avoids
+ * ambiguous default-branch behaviour; set `GIT_TEST_BRANCH` in `.gitlab-ci.yml`
+ * or rely on `CI_PIPELINE_ID`. Locally defaults to `main`.
+ */
+const GIT_TEST_BRANCH =
+  process.env.GIT_TEST_BRANCH?.trim() ||
+  (process.env.CI_PIPELINE_ID ? `ci-${process.env.CI_PIPELINE_ID}` : "main");
+
 function mktmp(prefix = "sync-test-"): string {
   return mkdtempSync(join(TMP_BASE, prefix));
 }
@@ -55,7 +64,7 @@ function createLinkedRepos(): { upstream: string; fork: string } {
   git("init --bare", upstream);
 
   const staging = mktmp("staging-");
-  git("init", staging);
+  git(`init -b ${GIT_TEST_BRANCH}`, staging);
   git("config user.email test@test.com", staging);
   git("config user.name Test", staging);
   git(`remote add origin "${upstream}"`, staging);
@@ -76,7 +85,7 @@ function createLinkedRepos(): { upstream: string; fork: string } {
 
   git("add -A", staging);
   git('commit -m "initial template"', staging);
-  git("push origin HEAD:main", staging);
+  git(`push origin HEAD:${GIT_TEST_BRANCH}`, staging);
 
   git(`clone "${upstream}" "${fork}"`, staging);
   git("config user.email test@test.com", fork);
@@ -106,7 +115,8 @@ function pushUpstreamChange(
 
   git("add -A", tmp);
   git(`commit -m "${message}"`, tmp);
-  git("push origin main", tmp);
+  // Push current HEAD to GIT_TEST_BRANCH (clone may use `master` if remote HEAD is unset — e.g. Alpine CI)
+  git(`push origin HEAD:${GIT_TEST_BRANCH}`, tmp);
   rmSync(tmp, { recursive: true, force: true });
 }
 
@@ -241,12 +251,12 @@ describe("assertGitRepo", () => {
 describe("currentBranch", () => {
   it("returns branch name", () => {
     const dir = mktmp();
-    git("init -b main", dir);
+    git(`init -b ${GIT_TEST_BRANCH}`, dir);
     git("config user.email test@test.com", dir);
     git("config user.name Test", dir);
     writeFile(dir, "f.txt", "x");
     git("add -A && git commit -m init", dir);
-    assert.equal(currentBranch(dir), "main");
+    assert.equal(currentBranch(dir), GIT_TEST_BRANCH);
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -270,7 +280,7 @@ describe("diffUpstream – three-dot behaviour", { timeout: 30_000 }, () => {
 
   it("shows empty diff when upstream has no new changes", () => {
     // Fetch sets FETCH_HEAD automatically
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
 
     const result = diffUpstream(fork);
     assert.equal(result.empty, true, "should be empty when repos are identical");
@@ -288,7 +298,7 @@ describe("diffUpstream – three-dot behaviour", { timeout: 30_000 }, () => {
       "templates/system/new-component.yaml": "apiVersion: v1\nkind: ConfigMap\n",
     });
 
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
 
     const result = diffUpstream(fork);
 
@@ -321,7 +331,7 @@ describe("diffUpstream – two-dot fallback (no common ancestor)", { timeout: 30
 
   before(() => {
     repoA = mktmp("unrel-a-");
-    git("init -b main", repoA);
+    git(`init -b ${GIT_TEST_BRANCH}`, repoA);
     git("config user.email test@test.com", repoA);
     git("config user.name Test", repoA);
     writeFile(repoA, "a.txt", "aaa");
@@ -329,14 +339,14 @@ describe("diffUpstream – two-dot fallback (no common ancestor)", { timeout: 30
     git('commit -m "commit A"', repoA);
 
     repoB = mktmp("unrel-b-");
-    git("init -b main", repoB);
+    git(`init -b ${GIT_TEST_BRANCH}`, repoB);
     git("config user.email test@test.com", repoB);
     git("config user.name Test", repoB);
     writeFile(repoB, "b.txt", "bbb");
     git("add -A", repoB);
     git('commit -m "commit B"', repoB);
 
-    git(`fetch "${repoA}" main`, repoB);
+    git(`fetch "${repoA}" ${GIT_TEST_BRANCH}`, repoB);
   });
 
   after(() => {
@@ -354,7 +364,7 @@ describe("diffUpstream – two-dot fallback (no common ancestor)", { timeout: 30
 describe("hasCommonAncestor", { timeout: 15_000 }, () => {
   it("returns true for repos with shared history", () => {
     const { upstream, fork } = createLinkedRepos();
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
     assert.equal(hasCommonAncestor(fork), true);
     rmSync(upstream, { recursive: true, force: true });
     rmSync(fork, { recursive: true, force: true });
@@ -362,7 +372,7 @@ describe("hasCommonAncestor", { timeout: 15_000 }, () => {
 
   it("returns false for unrelated repos", () => {
     const a = mktmp();
-    git("init -b main", a);
+    git(`init -b ${GIT_TEST_BRANCH}`, a);
     git("config user.email t@t.com", a);
     git("config user.name T", a);
     writeFile(a, "x.txt", "x");
@@ -370,13 +380,13 @@ describe("hasCommonAncestor", { timeout: 15_000 }, () => {
     git('commit -m "a"', a);
 
     const b = mktmp();
-    git("init -b main", b);
+    git(`init -b ${GIT_TEST_BRANCH}`, b);
     git("config user.email t@t.com", b);
     git("config user.name T", b);
     writeFile(b, "y.txt", "y");
     git("add -A", b);
     git('commit -m "b"', b);
-    git(`fetch "${a}" main`, b);
+    git(`fetch "${a}" ${GIT_TEST_BRANCH}`, b);
 
     assert.equal(hasCommonAncestor(b), false);
     rmSync(a, { recursive: true, force: true });
@@ -404,7 +414,7 @@ describe("mergeUpstream – clean merge", { timeout: 30_000 }, () => {
       "templates/system/added.yaml": "new: true\n",
     }, "upstream adds a file");
 
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
   });
 
   after(() => {
@@ -413,7 +423,7 @@ describe("mergeUpstream – clean merge", { timeout: 30_000 }, () => {
   });
 
   it("merges cleanly and returns success", async () => {
-    const result = await mergeUpstream(fork, "main", "origin", false);
+    const result = await mergeUpstream(fork, GIT_TEST_BRANCH, "origin", false);
     assert.equal(result.success, true);
     assert.equal(result.conflictCount, 0);
     assert.ok(
@@ -451,7 +461,7 @@ describe("mergeUpstream – conflict detection", { timeout: 30_000 }, () => {
     git("add -A", fork);
     git('commit -m "local modifies kustomization"', fork);
 
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
   });
 
   after(() => {
@@ -462,7 +472,7 @@ describe("mergeUpstream – conflict detection", { timeout: 30_000 }, () => {
   });
 
   it("detects conflicts and reports count", async () => {
-    const result = await mergeUpstream(fork, "main", "origin", false);
+    const result = await mergeUpstream(fork, GIT_TEST_BRANCH, "origin", false);
     assert.equal(result.success, false, "merge should fail due to conflicts");
     assert.ok(result.conflictCount > 0, `expected at least 1 conflict, got ${result.conflictCount}`);
     assert.ok(result.error?.includes("conflict"), "error message should mention conflicts");
@@ -475,7 +485,7 @@ describe("mergeUpstream – unrelated histories", { timeout: 30_000 }, () => {
 
   before(() => {
     repoA = mktmp("unrel-merge-a-");
-    git("init -b main", repoA);
+    git(`init -b ${GIT_TEST_BRANCH}`, repoA);
     git("config user.email t@t.com", repoA);
     git("config user.name T", repoA);
     writeFile(repoA, "upstream.txt", "upstream");
@@ -483,7 +493,7 @@ describe("mergeUpstream – unrelated histories", { timeout: 30_000 }, () => {
     git('commit -m "upstream init"', repoA);
 
     repoB = mktmp("unrel-merge-b-");
-    git("init -b main", repoB);
+    git(`init -b ${GIT_TEST_BRANCH}`, repoB);
     git("config user.email t@t.com", repoB);
     git("config user.name T", repoB);
     writeFile(repoB, "local.txt", "local");
@@ -491,7 +501,7 @@ describe("mergeUpstream – unrelated histories", { timeout: 30_000 }, () => {
     git('commit -m "local init"', repoB);
 
     git(`remote add upstream "${repoA}"`, repoB);
-    git("fetch upstream main", repoB);
+    git(`fetch upstream ${GIT_TEST_BRANCH}`, repoB);
   });
 
   after(() => {
@@ -501,7 +511,7 @@ describe("mergeUpstream – unrelated histories", { timeout: 30_000 }, () => {
   });
 
   it("fails without --allow-unrelated-histories", async () => {
-    const result = await mergeUpstream(repoB, "main", "upstream", false);
+    const result = await mergeUpstream(repoB, GIT_TEST_BRANCH, "upstream", false);
     assert.equal(result.success, false);
   });
 
@@ -509,7 +519,7 @@ describe("mergeUpstream – unrelated histories", { timeout: 30_000 }, () => {
     // Reset from the failed merge state
     try { git("merge --abort", repoB); } catch { /* noop */ }
 
-    const result = await mergeUpstream(repoB, "main", "upstream", true);
+    const result = await mergeUpstream(repoB, GIT_TEST_BRANCH, "upstream", true);
     assert.equal(result.success, true, result.error ?? "merge should succeed");
     assert.ok(existsSync(join(repoB, "upstream.txt")), "upstream file should be present");
     assert.ok(existsSync(join(repoB, "local.txt")), "local file should be preserved");
@@ -531,11 +541,11 @@ describe("diffUpstream – already merged shows empty", { timeout: 30_000 }, () 
       "templates/system/added.yaml": "new: true\n",
     });
 
-    git("fetch origin main", fork);
-    await mergeUpstream(fork, "main", "origin", false);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
+    await mergeUpstream(fork, GIT_TEST_BRANCH, "origin", false);
 
     // Fetch again after merging — now HEAD includes all upstream changes
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
   });
 
   after(() => {
@@ -573,7 +583,7 @@ describe("diffUpstream – accumulates multiple upstream commits", { timeout: 30
       ".sops.yaml": "creation_rules: []\n",
     }, "update sops");
 
-    git("fetch origin main", fork);
+    git(`fetch origin ${GIT_TEST_BRANCH}`, fork);
   });
 
   after(() => {
