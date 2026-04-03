@@ -15,7 +15,7 @@ import {
   formatError,
 } from "../utils/log.js";
 import { saveInstallPlan, loadInstallPlan, clearInstallPlan } from "../utils/config.js";
-import { execAsync, exec, commandExists } from "../utils/shell.js";
+import { execAsync, exec, execSafe, commandExists } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { ensureAll } from "../core/dependencies.js";
 import { runBootstrap } from "../core/bootstrap-runner.js";
@@ -398,18 +398,36 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
     {
       id: "repoLocalPath",
       section: "Git Repository",
-      hidden: (state) => !isNewRepo(state),
       skip: (state) => saved(state, "repoLocalPath"),
       run: async (state) => {
+        if (isNewRepo(state)) {
+          const v = await p.text({
+            message: pc.bold("Local directory to clone into"),
+            placeholder: `./${state.repoName}  (relative to current directory)`,
+            defaultValue: state.repoLocalPath || state.repoName,
+          });
+          if (p.isCancel(v)) return back();
+          return { ...state, repoLocalPath: v as string };
+        }
         const v = await p.text({
-          message: pc.bold("Local directory to clone into"),
-          placeholder: `./${state.repoName}  (relative to current directory)`,
-          defaultValue: state.repoLocalPath || state.repoName,
+          message: pc.bold("Path to your local repo checkout"),
+          placeholder: `./${state.repoName}  (relative or absolute path)`,
+          defaultValue: state.repoLocalPath || ".",
+          validate: (val) => {
+            const target = resolve(val || ".");
+            if (!existsSync(target)) return "Directory does not exist";
+            const gitCheck = execSafe("git rev-parse --is-inside-work-tree", { cwd: target });
+            if (gitCheck.exitCode !== 0) return "Not a git repository — run git init or clone first";
+            return undefined;
+          },
         });
         if (p.isCancel(v)) return back();
         return { ...state, repoLocalPath: v as string };
       },
-      review: (state) => ["Local path", `./${state.repoLocalPath}`],
+      review: (state) =>
+        isNewRepo(state)
+          ? ["Local path", `./${state.repoLocalPath}`]
+          : ["Local repo path", resolve(state.repoLocalPath || ".")],
     },
     {
       id: "repoBranch",
@@ -744,11 +762,11 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
     {
       id: "clusterPublicIp",
       section: "Network",
-      skip: (state) => saved(state, "clusterPublicIp"),
+      skip: (state) => dnsAndTlsEnabled(state) && saved(state, "clusterPublicIp"),
       run: async (state) => {
         const useLocal = !dnsAndTlsEnabled(state);
         const fallback = useLocal ? "127.0.0.1" : detectedIp;
-        const defaultIp = state.clusterPublicIp || fallback;
+        const defaultIp = useLocal ? fallback : (state.clusterPublicIp || fallback);
         const v = await p.text({
           message: useLocal
             ? pc.bold("Cluster IP") + pc.dim("  (local because DNS management is disabled. Rewrite if it necessary)")
@@ -770,11 +788,6 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function resolveRepoRoot(): string {
-  const scriptDir = new URL(".", import.meta.url).pathname;
-  return resolve(scriptDir, "../../../");
-}
 
 // ---------------------------------------------------------------------------
 // Repo creation phase (only for "new" mode)
@@ -1161,7 +1174,7 @@ export async function bootstrap(): Promise<void> {
       return process.exit(1) as never;
     }
   } else {
-    repoRoot = resolveRepoRoot();
+    repoRoot = resolve(wizard.repoLocalPath || ".");
   }
 
   // ── Build final config ───────────────────────────────────────────────
@@ -1226,7 +1239,8 @@ export async function bootstrap(): Promise<void> {
       );
 
       const addHosts = await p.confirm({
-        message: pc.bold("Append these entries to /etc/hosts now?"),
+        message: pc.bold("Append these entries to /etc/hosts now?") +
+          pc.dim("  (requires sudo — macOS will prompt for your password)"),
         initialValue: false,
       });
 
