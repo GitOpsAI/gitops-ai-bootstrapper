@@ -1,4 +1,6 @@
-# [GitOps AI](https://gitops-ai.vercel.app) - Bootstrapper
+# GitOps AI - Bootstrapper
+
+[![Website](https://img.shields.io/badge/website-gitops--ai.vercel.app-blue)](https://gitops-ai.vercel.app) [![Docs](https://img.shields.io/badge/docs-gitops--ai.vercel.app-orange)](https://gitops-ai.vercel.app/#docs/prerequisites) 
 
 GitOps-managed Kubernetes infrastructure for AI-powered applications powered by the [Flux Operator](https://fluxoperator.dev/) and [Flux CD](https://fluxcd.io/). A single bootstrap application provisions a Kubernetes cluster, installs all infrastructure components, and enables continuous delivery from Git.
 
