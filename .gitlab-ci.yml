@@ -101,16 +101,12 @@ create-tag:
         "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/commits/${CI_COMMIT_SHA}/merge_requests" \
         -H "PRIVATE-TOKEN: ${GITLAB_PAT}" | jq -r '.[0].source_branch // empty')
 
-      if [ -z "$SOURCE_BRANCH" ]; then
-        SOURCE_BRANCH=$(git log -1 --format=%s | sed -n "s/^Merge branch '\(.*\)' into.*/\1/p")
-      fi
-
       echo "Source branch: ${SOURCE_BRANCH:-unknown}"
 
       case "$SOURCE_BRANCH" in
-        major/*|breaking/*) BUMP="major" ;;
-        next/*|feature/*)   BUMP="minor" ;;
-        bugfix/*|fix/*|hotfix/*) BUMP="patch" ;;
+        major|major/*|breaking|breaking/*) BUMP="major" ;;
+        next|next/*|feature/*)   BUMP="minor" ;;
+        bugfix|bugfix/*|fix|fix/*|hotfix|hotfix/*) BUMP="patch" ;;
         *)                  BUMP="patch" ;;
       esac
 
