@@ -163,8 +163,10 @@ export async function loginWithGitHubDevice(host: string): Promise<string> {
     pc.dim("If the browser doesn't open, visit the URL above manually."),
   );
 
-  p.log.info(pc.dim("Opening browser in 3 seconds…"));
-  await new Promise((r) => setTimeout(r, 3000));
+  await p.text({
+    message: pc.dim("Press ") + pc.bold(pc.yellow("Enter")) + pc.dim(" to open browser…"),
+    defaultValue: "",
+  });
   openUrl(dc.verification_uri);
 
   const token = await pollForToken(host, clientId, dc.device_code, dc.interval);

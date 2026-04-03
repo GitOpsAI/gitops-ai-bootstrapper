@@ -1,7 +1,36 @@
 {
   "name": "gitops-ai",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Flux GitOps infrastructure management CLI with interactive TUI",
+  "keywords": [
+    "gitops",
+    "flux",
+    "fluxcd",
+    "kubernetes",
+    "k8s",
+    "infrastructure",
+    "iac",
+    "cli",
+    "bootstrap",
+    "helm",
+    "kustomize",
+    "sops",
+    "template-sync",
+    "gitlab",
+    "github",
+    "devops",
+    "platform-engineering",
+    "cd",
+    "continuous-delivery",
+    "homelab"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/everythings-gonna-be-alright/gitops_ai_bootstrapper.git"
+  },
+  "homepage": "https://gitlab.com/everythings-gonna-be-alright/gitops_ai_bootstrapper",
+  "author": "everythings-gonna-be-alright",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -16,7 +45,8 @@
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
     "test:validate": "tsx --test tests/validate.ts",
-    "test:integration": "tsx --test tests/integration.ts"
+    "test:sync": "tsx --test tests/template-sync.test.ts",
+    "test:integration": "tsx --test tests/integration.test.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",

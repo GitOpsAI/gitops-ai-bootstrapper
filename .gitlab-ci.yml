@@ -1,8 +1,38 @@
 stages:
+  - test
   - security
   - integration
   - tag
   - publish
+
+# ---------------------------------------------------------------------------
+# Stage: test  (merge requests + main)
+# ---------------------------------------------------------------------------
+
+typecheck:
+  stage: test
+  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  before_script:
+    - npm ci --ignore-scripts
+  script:
+    - npx tsc --noEmit
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
+
+test-template-sync:
+  stage: test
+  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  before_script:
+    - apk add --no-cache git
+    - git config --global user.email "ci@test.local"
+    - git config --global user.name "CI"
+    - npm ci --ignore-scripts
+  script:
+    - node --import tsx --test tests/template-sync.test.ts
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == "main"
 
 # ---------------------------------------------------------------------------
 # Stage: security  (merge requests + main)
@@ -77,7 +107,7 @@ integration-test:
     - apk add --no-cache docker-cli git curl openssl bash sudo
     - npm ci --ignore-scripts
   script:
-    - npx tsx --test tests/integration.ts
+    - npx tsx --test tests/integration.test.ts
   after_script:
     - |
       git push "https://oauth2:${GITLAB_PAT}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" \
