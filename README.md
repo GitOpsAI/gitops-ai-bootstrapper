@@ -1,6 +1,6 @@
 # GitOps AI - Bootstrapper
 
-[![Website](https://img.shields.io/badge/website-gitops--ai.vercel.app-blue)](https://gitops-ai.vercel.app) [![Docs](https://img.shields.io/badge/docs-gitops--ai.vercel.app-orange)](https://gitops-ai.vercel.app/#docs/prerequisites) 
+[![Website](https://img.shields.io/badge/website-gitops--ai.vercel.app-blue)](https://gitops-ai.vercel.app) [![Docs](https://img.shields.io/badge/docs-gitops--ai.vercel.app-orange)](https://gitops-ai.vercel.app/#docs/prerequisites)
 
 GitOps-managed Kubernetes infrastructure for AI-powered applications powered by the [Flux Operator](https://fluxoperator.dev/) and [Flux CD](https://fluxcd.io/). A single bootstrap application provisions a Kubernetes cluster, installs all infrastructure components, and enables continuous delivery from Git.
 
@@ -16,7 +16,8 @@ GitOps-managed Kubernetes infrastructure for AI-powered applications powered by 
 
 ## Quick Start
 
-Run on our macOS machine:
+On your Mac or Linux machine:
+
 ```bash
 npx gitops-ai bootstrap
 ```
@@ -33,17 +34,17 @@ Or, if you already have Node.js >= 18:
 npx gitops-ai bootstrap
 ```
 
-The interactive wizard will prompt for your GitLab PAT, fork the template into your namespace, and run the full bootstrap.
+The interactive wizard will prompt for your Git provider (GitHub or GitLab), create or use a repository from the [GitOps AI Template](https://gitlab.com/everythings-gonna-be-alright/gitops_ai_template), and run the full bootstrap.
 
 ## Requirements
 
-| Resource       | Minimum                |
-|----------------|------------------------|
-| **CPU**        | 2+ cores               |
-| **Memory**     | 4+ GB                  |
-| **Disk**       | 20+ GB free            |
-| **OS**         | Ubuntu 25.04+ or macOS |
-| **Node.js**    | 18+ (installed automatically by `install.sh`) |
+| Resource    | Minimum                                       |
+|-------------|-----------------------------------------------|
+| **CPU**     | 2+ cores                                      |
+| **Memory**  | 4+ GB                                         |
+| **Disk**    | 20+ GB free                                   |
+| **OS**      | Ubuntu 25.04+ or macOS                        |
+| **Node.js** | 18+ (installed automatically by `install.sh`) |
 
 You will also need a [GitLab PAT](docs/prerequisites.md#1-gitlab-personal-access-token), a [Cloudflare API Token](docs/prerequisites.md#2-cloudflare-api-token) (if using automatic DNS/TLS), and an [OpenAI API Key](docs/prerequisites.md#3-openai-api-key) (if using OpenClaw). See [Prerequisites](docs/prerequisites.md) for full details.
 
@@ -69,9 +70,21 @@ Keeping the template in a separate repository means:
 - **Clean separation** -- the bootstrapper CLI handles provisioning logic; the template holds pure infrastructure declarations. Each can be versioned and tested independently.
 - **Customisation without lock-in** -- after the fork you own the repo. Add namespaces, swap Helm charts, or restructure directories to fit your needs.
 
+### Repository layout (template → your repo)
+
+The upstream template (and your bootstrapped repo) is organised roughly as:
+
+| Path                     | Role                                                                                                                                                                                        |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `templates/<category>/…` | Shared Helm bases and component manifests (e.g. `templates/system/`, `templates/ai/`, `templates/monitoring/`). |
+| `clusters/_template/`    | Prototype cluster layout; the CLI copies this to `clusters/<your-cluster-name>/` during bootstrap.            |
+| `clusters/<name>/`       | Your live cluster overlay (`cluster-sync.yaml`, `components/`, encrypted secrets).                                                                                                          |
+
+See [Architecture](docs/architecture.md) for diagrams and a fuller tree.
+
 ## CLI Commands
 
-The CLI provides three commands:
+The CLI provides these commands:
 
 ### `bootstrap` (alias: `install`)
 
@@ -91,16 +104,16 @@ SOPS secret encryption management. Run without arguments for an interactive menu
 npx gitops-ai sops [subcommand] [file]
 ```
 
-| Subcommand       | Description                                              |
-|------------------|----------------------------------------------------------|
+| Subcommand       | Description                                                            |
+|------------------|------------------------------------------------------------------------|
 | `init`           | First-time setup: generate age key, create `.sops.yaml` and K8s secret |
-| `encrypt`        | Encrypt all unencrypted secret files                     |
-| `encrypt <file>` | Encrypt a specific file                                  |
-| `decrypt <file>` | Decrypt a file for viewing (re-encrypt before commit)    |
-| `edit <file>`    | Open encrypted file in `$EDITOR` (auto re-encrypts on save) |
-| `status`         | Show encryption status of all secret files               |
-| `import`         | Import an existing age key into a new cluster            |
-| `rotate`         | Rotate to a new age key and re-encrypt everything        |
+| `encrypt`        | Encrypt all unencrypted secret files                                   |
+| `encrypt <file>` | Encrypt a specific file                                                |
+| `decrypt <file>` | Decrypt a file for viewing (re-encrypt before commit)                  |
+| `edit <file>`    | Open encrypted file in `$EDITOR` (auto re-encrypts on save)            |
+| `status`         | Show encryption status of all secret files                             |
+| `import`         | Import an existing age key into a new cluster                          |
+| `rotate`         | Rotate to a new age key and re-encrypt everything                      |
 
 ### `openclaw-pair`
 
@@ -109,6 +122,18 @@ Pair an OpenClaw device with the cluster after bootstrap:
 ```bash
 npx gitops-ai openclaw-pair
 ```
+
+### `template sync`
+
+Fetch the upstream GitOps template and merge changes into your current branch. Run without flags for an **interactive wizard** (tag picker, diff preview with risk classification, merge/dry-run/cancel), or pass flags for non-interactive use:
+
+```bash
+npx gitops-ai template sync                        # interactive wizard
+npx gitops-ai template sync --ref v1.0.0           # non-interactive merge
+npx gitops-ai template sync --ref main --dry-run   # non-interactive preview
+```
+
+See [Template synchronization](docs/template-sync.md).
 
 ## Components
 
@@ -130,23 +155,27 @@ Components marked **DNS/TLS** are automatically enabled when you opt into automa
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Prerequisites](docs/prerequisites.md) | API tokens, Docker runtime, network requirements |
-| [Bootstrap](docs/bootstrap.md) | What the bootstrap does, wizard walkthrough, resume capability |
-| [Architecture](docs/architecture.md) | Repository structure, Flux Operator, GitOps workflow |
-| [Configuration](docs/configuration.md) | Cluster variables, environment variables, post-bootstrap changes |
+| Document                                          | Description                                                         |
+|---------------------------------------------------|---------------------------------------------------------------------|
+| [Prerequisites](docs/prerequisites.md)            | Node.js, Docker (macOS), Git provider, optional Cloudflare / OpenAI |
+| [Bootstrap](docs/bootstrap.md)                    | What the bootstrap does, wizard walkthrough, resume capability      |
+| [Architecture](docs/architecture.md)              | Repositories, bootstrap flow, Flux Operator & Instance, repo tree   |
+| [Configuration](docs/configuration.md)            | Cluster variables, SOPS defaults, post-bootstrap changes            |
+| [Template synchronization](docs/template-sync.md) | Upstream merges, `template sync`, CI parity, risk tiers             |
+| [Scaling](docs/scaling.md)                        | Adding k3s worker and server nodes (Linux)                          |
+| [Security](docs/security.md)                      | SOPS, Git auth, hardening, network                                  |
 
 ## Development
 
 ```bash
-git clone <repo-url> && cd gitops-ai
+git clone https://gitlab.com/everythings-gonna-be-alright/gitops_ai_bootstrapper.git
+cd gitops_ai_bootstrapper
 npm install
 
 npm run dev              # Run CLI locally via tsx
 npm run build            # Compile TypeScript to dist/
 npm run typecheck        # Type-check without emitting
-npm run test:validate    # Validate Flux build against template
+npm run test:sync        # Unit tests for template sync logic
 npm run test:integration # Full k3d + Flux integration test (requires Docker)
 ```
 

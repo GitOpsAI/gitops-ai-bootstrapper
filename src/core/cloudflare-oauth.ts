@@ -6,6 +6,7 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { URL } from "node:url";
 import { execSync } from "node:child_process";
+import { createInterface } from "node:readline";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { isMacOS } from "../utils/platform.js";
@@ -182,11 +183,14 @@ async function oauthLogin(): Promise<string> {
       authUrl.searchParams.set("code_challenge_method", "S256");
 
       const urlStr = authUrl.toString();
-      p.log.info("Opening browser for Cloudflare authorization...");
       p.log.info(
         pc.dim(`If the browser doesn't open, visit:\n${pc.cyan(urlStr)}`),
       );
-      openUrl(urlStr);
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(`Press \x1b[1m\x1b[33mEnter\x1b[0m to open browser for Cloudflare authorization… `, () => {
+        rl.close();
+        openUrl(urlStr);
+      });
     });
 
     timer = setTimeout(() => {
