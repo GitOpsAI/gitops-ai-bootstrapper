@@ -62,6 +62,9 @@ function createLinkedRepos(): { upstream: string; fork: string } {
   const fork = mktmp("fork-");
 
   git("init --bare", upstream);
+  // Set bare repo's HEAD so clones check out GIT_TEST_BRANCH instead of the
+  // system default (often `master`), which may not match the branch we push to.
+  git(`symbolic-ref HEAD refs/heads/${GIT_TEST_BRANCH}`, upstream);
 
   const staging = mktmp("staging-");
   git(`init -b ${GIT_TEST_BRANCH}`, staging);
