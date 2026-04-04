@@ -238,26 +238,6 @@ async function waitForHelmReleaseReady(
   );
 }
 
-async function deleteHelmReleaseIgnoreNotFound(
-  kc: KubeConfig,
-  namespace: string,
-  name: string,
-): Promise<void> {
-  const { custom } = makeClients(kc);
-  try {
-    await custom.deleteNamespacedCustomObject({
-      group: HELM_GROUP,
-      version: HELM_V2,
-      namespace,
-      plural: "helmreleases",
-      name,
-    });
-  } catch (e: unknown) {
-    if (httpErrorCode(e) === 404) return;
-    throw e;
-  }
-}
-
 async function podNameForDeployment(
   kc: KubeConfig,
   namespace: string,
@@ -586,19 +566,25 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     }
 
     try {
-      /** Skipped so the suite does not need live Cloudflare API credentials. */
-      const helmReleasesRemovedForCi: { namespace: string; name: string }[] = [
+      /** Not asserted here — needs live Cloudflare API credentials. Flux also re-applies these from Git, so deleting the CR does not remove them for long. */
+      const helmReleasesSkipReadyInCi: { namespace: string; name: string }[] = [
         { namespace: "external-dns", name: "external-dns" },
       ];
-      log("Removing HelmReleases that require real credentials:");
       const kc = kubeConfigFromDefault();
-      for (const { namespace, name } of helmReleasesRemovedForCi) {
-        console.log(`  delete HelmRelease ${namespace}/${name}`);
-        await deleteHelmReleaseIgnoreNotFound(kc, namespace, name);
-      }
+      const allRefs = await listAllHelmReleaseRefs(kc);
+      const skipKey = (r: { namespace: string; name: string }) =>
+        `${r.namespace}/${r.name}`;
+      const skipSet = new Set(helmReleasesSkipReadyInCi.map(skipKey));
+      const refs = allRefs.filter((r) => !skipSet.has(skipKey(r)));
 
       log("Waiting for all HelmReleases to become Ready");
-      const refs = await listAllHelmReleaseRefs(kc);
+      for (const r of helmReleasesSkipReadyInCi) {
+        if (allRefs.some((x) => x.namespace === r.namespace && x.name === r.name)) {
+          console.log(
+            `  skip ${r.namespace}/${r.name} (needs live provider credentials; not deleted — Flux re-applies from Git)`,
+          );
+        }
+      }
       for (const { namespace, name } of refs) {
         console.log(`  Waiting for ${namespace}/${name}`);
         await waitForHelmReleaseReady(kc, namespace, name, 600_000);
