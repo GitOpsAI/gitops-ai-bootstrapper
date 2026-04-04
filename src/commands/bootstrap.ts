@@ -1150,6 +1150,7 @@ export async function bootstrap(): Promise<void> {
     : [
         ...REQUIRED_COMPONENT_IDS,
         ...(savedDnsTls ? DNS_TLS_COMPONENT_IDS : []),
+        ...MONITORING_COMPONENT_IDS,
         ...OPTIONAL_COMPONENTS.map((c) => c.id),
       ];
 
