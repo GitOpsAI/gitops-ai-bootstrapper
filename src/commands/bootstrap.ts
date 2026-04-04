@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { networkInterfaces } from "node:os";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -37,6 +38,7 @@ import {
   type BootstrapConfig,
   type ComponentDef,
 } from "../schemas.js";
+import { fetchTemplateTags, readPackageVersion } from "../core/template-sync.js";
 import {
   stepWizard,
   back,
@@ -102,18 +104,7 @@ function componentLabel(id: string): string {
   return COMPONENTS.find((c) => c.id === id)?.label ?? id;
 }
 
-async function fetchTemplateTags(): Promise<string[]> {
-  const encoded = encodeURIComponent(SOURCE_PROJECT_PATH);
-  const url = `https://${SOURCE_GITLAB_HOST}/api/v4/projects/${encoded}/repository/tags?per_page=50&order_by=version&sort=desc`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const tags = (await res.json()) as { name: string }[];
-    return tags.map((t) => t.name);
-  } catch {
-    return [];
-  }
-}
+// fetchTemplateTags is imported from core/template-sync.ts
 
 function providerLabel(type: ProviderType): string {
   return type === "gitlab" ? "GitLab" : "GitHub";
@@ -528,6 +519,8 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
         const hasMonitoring = MONITORING_COMPONENT_IDS.every((id) =>
           state.selectedComponents.includes(id),
         );
+        const monitoringExplicitlyRemoved = !hasMonitoring
+          && state.selectedComponents.some((id) => !REQUIRED_COMPONENT_IDS.includes(id));
 
         const selected = await p.multiselect({
           message: pc.bold("Optional components to install"),
@@ -540,7 +533,7 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
             })),
           ],
           initialValues: [
-            ...(hasMonitoring ? [MONITORING_GROUP_ID] : []),
+            ...((hasMonitoring || !monitoringExplicitlyRemoved) ? [MONITORING_GROUP_ID] : []),
             ...state.selectedComponents.filter((id) =>
               OPTIONAL_COMPONENTS.some((c) => c.id === id),
             ),
@@ -723,7 +716,10 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
               pc.dim("The key starts with sk-… and is only shown once."),
             "OpenAI API Key",
           );
-          p.log.info(pc.dim("Opening browser…"));
+          await p.text({
+            message: pc.dim("Press ") + pc.bold(pc.yellow("Enter")) + pc.dim(" to open browser…"),
+            defaultValue: "",
+          });
           openUrl(OPENAI_API_KEYS_URL);
         }
 
@@ -745,42 +741,135 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
 
     // ── Network ──────────────────────────────────────────────────────────
     {
-      id: "ingressAllowedIps",
+      id: "networkAccessMode",
       section: "Network",
-      skip: (state) => saved(state, "ingressAllowedIps"),
+      skip: (state) => saved(state, "ingressAllowedIps") && saved(state, "clusterPublicIp"),
       run: async (state) => {
-        const v = await p.text({
-          message: pc.bold("IPs allowed to access your cluster (CIDR, comma-separated)"),
-          placeholder: "0.0.0.0/0",
-          defaultValue: state.ingressAllowedIps,
+        const mode = await p.select({
+          message: pc.bold("How will you access the cluster?"),
+          options: [
+            {
+              value: "public",
+              label: "Public",
+              hint: "auto-detects your public IP",
+            },
+            {
+              value: "local",
+              label: "Local only (localhost / LAN)",
+              hint: "uses 127.0.0.1 or a private IP",
+            },
+          ],
         });
-        if (p.isCancel(v)) return back();
-        return { ...state, ingressAllowedIps: v as string };
-      },
-      review: (state) => ["Allowed IPs", state.ingressAllowedIps],
-    },
-    {
-      id: "clusterPublicIp",
-      section: "Network",
-      skip: (state) => dnsAndTlsEnabled(state) && saved(state, "clusterPublicIp"),
-      run: async (state) => {
-        const useLocal = !dnsAndTlsEnabled(state);
-        const fallback = useLocal ? "127.0.0.1" : detectedIp;
-        const defaultIp = useLocal ? fallback : (state.clusterPublicIp || fallback);
-        const v = await p.text({
-          message: useLocal
-            ? pc.bold("Cluster IP") + pc.dim("  (local because DNS management is disabled. Rewrite if it necessary)")
-            : pc.bold("Public IP of your cluster"),
-          defaultValue: defaultIp,
-          placeholder: fallback || "x.x.x.x",
-          validate: (v) => {
-            if (!v && !defaultIp) return "Required";
-          },
+        if (p.isCancel(mode)) return back();
+
+        const m = mode as string;
+
+        async function resolvePublicIp(): Promise<string> {
+          if (detectedIp) return detectedIp;
+          const services = ["ifconfig.me", "api.ipify.org", "icanhazip.com"];
+          await withSpinner("Detecting public IP", async () => {
+            for (const svc of services) {
+              try {
+                const ip = (await execAsync(`curl -s --max-time 4 ${svc}`)).trim();
+                if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { detectedIp = ip; return; }
+              } catch { /* try next */ }
+            }
+          });
+          return detectedIp;
+        }
+
+        if (m === "public") {
+          const publicIp = await resolvePublicIp();
+          const confirmIp = await p.text({
+            message: pc.bold("Public IP of your cluster"),
+            ...(publicIp
+              ? { initialValue: publicIp }
+              : { placeholder: "x.x.x.x" }),
+            validate: (v) => { if (!v) return "Required"; },
+          });
+          if (p.isCancel(confirmIp)) return back();
+
+          const restriction = await p.select({
+            message: pc.bold("Restrict ingress access?"),
+            options: [
+              {
+                value: "open",
+                label: "Open to everyone (0.0.0.0/0)",
+                hint: "any IP can reach the cluster",
+              },
+              {
+                value: "restrict",
+                label: "Restrict to specific IPs",
+                hint: "only listed CIDRs can reach the cluster",
+              },
+            ],
+          });
+          if (p.isCancel(restriction)) return back();
+
+          if (restriction === "open") {
+            return { ...state, clusterPublicIp: confirmIp as string, ingressAllowedIps: "0.0.0.0/0" };
+          }
+
+          const allowedCidrs = await p.text({
+            message: pc.bold("Allowed CIDRs (comma-separated)"),
+            placeholder: "203.0.113.0/24,198.51.100.5/32",
+            validate: (v) => { if (!v) return "At least one CIDR is required"; },
+          });
+          if (p.isCancel(allowedCidrs)) return back();
+          return { ...state, clusterPublicIp: confirmIp as string, ingressAllowedIps: allowedCidrs as string };
+        }
+
+        // local — detect LAN IPs from network interfaces
+        const lanIps: { ip: string; iface: string }[] = [];
+        const ifaces = networkInterfaces();
+        for (const [name, addrs] of Object.entries(ifaces)) {
+          for (const addr of addrs ?? []) {
+            if (addr.family === "IPv4" && !addr.internal) {
+              lanIps.push({ ip: addr.address, iface: name });
+            }
+          }
+        }
+
+        let localIp: string | symbol;
+        if (lanIps.length > 0) {
+          localIp = await p.select({
+            message: pc.bold("Cluster IP"),
+            options: [
+              ...lanIps.map((l) => ({
+                value: l.ip,
+                label: l.ip,
+                hint: l.iface,
+              })),
+              { value: "127.0.0.1", label: "127.0.0.1", hint: "localhost" },
+              { value: "__custom__", label: "Enter manually" },
+            ],
+          });
+          if (p.isCancel(localIp)) return back();
+          if (localIp === "__custom__") {
+            localIp = await p.text({
+              message: pc.bold("Cluster IP"),
+              placeholder: "192.168.x.x",
+              validate: (v) => { if (!v) return "Required"; },
+            });
+            if (p.isCancel(localIp)) return back();
+          }
+        } else {
+          localIp = await p.text({
+            message: pc.bold("Cluster IP") + pc.dim("  (127.0.0.1 for localhost, or your LAN IP)"),
+            defaultValue: "127.0.0.1",
+          });
+        }
+        if (p.isCancel(localIp)) return back();
+
+        const allowedIps = await p.text({
+          message: pc.bold("IPs allowed to access the cluster (CIDR)"),
+          defaultValue: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+          placeholder: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
         });
-        if (p.isCancel(v)) return back();
-        return { ...state, clusterPublicIp: v as string };
+        if (p.isCancel(allowedIps)) return back();
+        return { ...state, clusterPublicIp: localIp as string, ingressAllowedIps: allowedIps as string };
       },
-      review: (state) => ["Public IP", state.clusterPublicIp],
+      review: (state) => ["Network", `${state.clusterPublicIp}  allowed: ${state.ingressAllowedIps}`],
     },
   ];
 }
@@ -969,18 +1058,32 @@ export async function bootstrap(): Promise<void> {
   });
 
   console.log();
-  p.box(
-    `💅 Secure, isolated and flexible GitOps infrastructure for modern requirements\n` +
-    `🤖 You can manage it yourself — or delegate to AI.\n` +
-    `🔐 Encrypted secrets, hardened containers, continuous delivery.`,
-    pc.bold("Welcome to GitOps AI Bootstrapper"),
-    {
-      contentAlign: "center",
-      titleAlign: "center",
-      rounded: true,
-      formatBorder: (text) => pc.cyan(text),
-    },
-  );
+  const version = readPackageVersion();
+
+  const logo = [
+    "  ▄█████▄ ",
+    "  ██ ◆ ██ ",
+    "  ██   ██ ",
+    "  ▀██ ██▀ ",
+    "    ▀█▀   ",
+  ];
+  const taglines = [
+    "💅 Secure, isolated & flexible GitOps infrastructure",
+    "🤖 Manage it yourself — or delegate to AI",
+    "🔐 Encrypted secrets, hardened containers,",
+    "   continuous delivery",
+    pc.dim(`v${version}`),
+  ];
+  const banner = logo
+    .map((l, i) => pc.cyan(l) + "  " + (taglines[i] ?? ""))
+    .join("\n");
+
+  p.box(banner, pc.bold("Welcome to GitOps AI Bootstrapper"), {
+    contentAlign: "left",
+    titleAlign: "center",
+    rounded: true,
+    formatBorder: (text) => pc.cyan(text),
+  });
 
   // ── Load saved state ─────────────────────────────────────────────────
   const saved = loadInstallPlan();
@@ -1026,13 +1129,14 @@ export async function bootstrap(): Promise<void> {
     }
   }
 
-  // ── Detect public IP (silent) ────────────────────────────────────────
-  let detectedIp = prev.clusterPublicIp ?? "";
-  if (!detectedIp) {
-    try {
-      detectedIp = await execAsync("curl -s --max-time 5 ifconfig.me");
-    } catch {
-      detectedIp = "";
+  // ── Detect public IP (silent, try multiple services) ─────────────────
+  let detectedIp = "";
+  if (!prev.clusterPublicIp) {
+    for (const svc of ["ifconfig.me", "api.ipify.org", "icanhazip.com"]) {
+      try {
+        const ip = (await execAsync(`curl -s --max-time 4 ${svc}`)).trim();
+        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { detectedIp = ip; break; }
+      } catch { /* try next */ }
     }
   }
 
@@ -1046,6 +1150,7 @@ export async function bootstrap(): Promise<void> {
     : [
         ...REQUIRED_COMPONENT_IDS,
         ...(savedDnsTls ? DNS_TLS_COMPONENT_IDS : []),
+        ...MONITORING_COMPONENT_IDS,
         ...OPTIONAL_COMPONENTS.map((c) => c.id),
       ];
 
@@ -1199,6 +1304,9 @@ export async function bootstrap(): Promise<void> {
       ? wizard.openclawGatewayToken
       : undefined,
     selectedComponents,
+    templateRef:
+      wizard.templateTag?.trim() ||
+      (isNewRepo(wizard) ? "main" : undefined),
   };
 
   // ── Check macOS prerequisites ────────────────────────────────────────
@@ -1223,8 +1331,10 @@ export async function bootstrap(): Promise<void> {
     return process.exit(1) as never;
   }
 
-  // ── /etc/hosts suggestion (no DNS management) ───────────────────────
-  if (!wizard.manageDnsAndTls) {
+  // ── /etc/hosts suggestion (local IP or no DNS management) ───────────
+  const isLocalIp = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(fullConfig.clusterPublicIp)
+    || fullConfig.clusterPublicIp === "localhost";
+  if (isLocalIp || !wizard.manageDnsAndTls) {
     const hostsEntries = selectedComponents
       .map((id) => COMPONENTS.find((c) => c.id === id))
       .filter((c): c is ComponentDef => !!c?.subdomain)
@@ -1232,8 +1342,11 @@ export async function bootstrap(): Promise<void> {
 
     if (hostsEntries.length > 0) {
       const hostsBlock = hostsEntries.join("\n");
+      const reason = isLocalIp
+        ? "Your cluster uses a local/private IP, so DNS won't resolve publicly."
+        : "Automatic DNS is disabled.";
       p.note(
-        `${pc.dim("Since automatic DNS is disabled, add these to")} ${pc.bold("/etc/hosts")}${pc.dim(":")}\n\n` +
+        `${pc.dim(reason + " Add these to")} ${pc.bold("/etc/hosts")}${pc.dim(":")}\n\n` +
         hostsEntries.map((e) => pc.cyan(e)).join("\n"),
         "Local DNS",
       );
@@ -1241,7 +1354,7 @@ export async function bootstrap(): Promise<void> {
       const addHosts = await p.confirm({
         message: pc.bold("Append these entries to /etc/hosts now?") +
           pc.dim("  (requires sudo — macOS will prompt for your password)"),
-        initialValue: false,
+        initialValue: true,
       });
 
       if (!p.isCancel(addHosts) && addHosts) {

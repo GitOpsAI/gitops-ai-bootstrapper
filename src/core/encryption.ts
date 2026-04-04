@@ -266,7 +266,7 @@ export function updateFluxKustomization(
   repoRoot: string,
   secretName: string,
 ): void {
-  const syncFile = `${repoRoot}/clusters/_default-template/cluster-sync.yaml`;
+  const syncFile = `${repoRoot}/clusters/_template/cluster-sync.yaml`;
   if (!existsSync(syncFile)) {
     log.warn("No cluster-sync.yaml template found — skipping auto-patch.");
     return;
