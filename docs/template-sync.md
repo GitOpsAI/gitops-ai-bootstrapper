@@ -1,6 +1,6 @@
 # Template synchronization
 
-This guide matches the upstream [template repository](https://gitlab.com/everythings-gonna-be-alright/fluxcd_ai_template) layout: shared bases under `templates/` (by category, e.g. `templates/system/`, `templates/ai/`), `clusters/_template/`, and your live `clusters/<clusterName>/`.
+This guide matches the upstream [template repository](https://github.com/GitOpsAI/gitops-ai-template) layout: shared bases under `templates/` (by category, e.g. `templates/system/`, `templates/ai/`), `clusters/_template/`, and your live `clusters/<clusterName>/`.
 
 ## After bootstrap
 
@@ -11,7 +11,7 @@ This guide matches the upstream [template repository](https://gitlab.com/everyth
 Add the canonical template (if not already present):
 
 ```bash
-git remote add upstream https://gitlab.com/everythings-gonna-be-alright/fluxcd_ai_template.git
+git remote add upstream https://github.com/GitOpsAI/gitops-ai-template.git
 git fetch upstream --tags
 ```
 
@@ -82,7 +82,7 @@ Before pushing, run the same checks the template uses in CI:
 - `flux build kustomization` for your cluster path (with the same `CLUSTER_*` substitutions as CI)
 - `kubeconform` on the build output
 
-See the template [`.gitlab-ci.yml`](https://gitlab.com/everythings-gonna-be-alright/fluxcd_ai_template/-/blob/main/.gitlab-ci.yml) for exact variables.
+See the template [GitHub Actions workflow](https://github.com/GitOpsAI/gitops-ai-template/blob/main/.github/workflows/ci.yml) or [`.gitlab-ci.yml`](https://github.com/GitOpsAI/gitops-ai-template/blob/main/.gitlab-ci.yml) for exact variables.
 
 ## Risk tiers (GitLab MR jobs)
 

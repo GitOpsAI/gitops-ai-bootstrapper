@@ -5,8 +5,10 @@ import {
   writeFileSync,
   cpSync,
   mkdirSync,
+  realpathSync,
   rmSync,
 } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
@@ -18,8 +20,9 @@ import * as encryption from "./encryption.js";
 import {
   COMPONENTS,
   defaultSopsConfig,
+  httpsGitCredentialUsername,
   shouldUseSshDeployKey,
-  SOURCE_GITLAB_HOST,
+  SOURCE_TEMPLATE_HOST,
   SOURCE_PROJECT_PATH,
   type BootstrapConfig,
 } from "../schemas.js";
@@ -39,7 +42,7 @@ export interface RunBootstrapResult {
  */
 export async function runBootstrap(
   config: BootstrapConfig,
-  repoRoot: string,
+  repoRootInput: string,
 ): Promise<RunBootstrapResult> {
   const provider = await getProvider(config.gitProvider ?? "gitlab");
 
@@ -49,9 +52,22 @@ export async function runBootstrap(
   log.step("Installing CLI dependencies");
   await ensureAll(tools);
 
+  let repoRoot: string;
+  try {
+    repoRoot = realpathSync(resolvePath(repoRootInput));
+  } catch {
+    throw new Error(`Bootstrap repo path does not exist: ${repoRootInput}`);
+  }
+  if (execSafe("git rev-parse --is-inside-work-tree", { cwd: repoRoot }).exitCode !== 0) {
+    throw new Error(
+      `Bootstrap needs a real git clone (with .git), not a source archive. Fix CI checkout (install git before actions/checkout). Offending path: ${repoRoot}`,
+    );
+  }
+
   // ── Git setup ─────────────────────────────────────────────────────
   log.step("Configuring git");
-  if (!execSafe("git config user.email", { cwd: repoRoot }).stdout) {
+  const emailCfg = execSafe("git config user.email", { cwd: repoRoot });
+  if (!emailCfg.stdout.trim()) {
     exec('git config user.email "bootstrap@gitops.local"', { cwd: repoRoot });
     exec('git config user.name "GitOps Bootstrap"', { cwd: repoRoot });
   }
@@ -108,7 +124,7 @@ export async function runBootstrap(
     const fluxToken = config.gitFluxToken || config.gitToken;
     log.step("Creating Git auth secret");
     await k8s.createSecret("flux-system", "flux-system", {
-      username: "git",
+      username: httpsGitCredentialUsername(config),
       password: fluxToken,
     });
     log.success("flux-system secret created");
@@ -153,6 +169,10 @@ export async function runBootstrap(
 
   // ── Git commit & push ─────────────────────────────────────────────
   await withSpinner("Committing and pushing to Git", async () => {
+    // Never commit workflow changes from the template copy: GitHub rejects pushes that
+    // touch `.github/workflows/*` unless the token has `workflows` scope.
+    resetLocalWorkflowFiles(repoRoot);
+
     await execAsync("git add .", { cwd: repoRoot });
     execSafe(
       `git commit -m "Add ${config.clusterName} cluster with encrypted secrets"`,
@@ -180,17 +200,25 @@ export async function runBootstrap(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+function resetLocalWorkflowFiles(repoRoot: string): void {
+  const wf = `${repoRoot}/.github/workflows`;
+  if (!existsSync(wf)) return;
+  execSafe("git checkout HEAD -- .github/workflows", { cwd: repoRoot });
+  execSafe("git clean -fd -- .github/workflows", { cwd: repoRoot });
+}
+
 async function cloneTemplate(repoRoot: string): Promise<void> {
   const tmpDir = "/tmp/gitops-template";
 
   await withSpinner("Cloning template repository", async () => {
     execSafe(`rm -rf "${tmpDir}"`);
     await execAsync(
-      `git clone --quiet "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${tmpDir}"`,
+      `git clone --quiet "https://${SOURCE_TEMPLATE_HOST}/${SOURCE_PROJECT_PATH}.git" "${tmpDir}"`,
     );
 
+    // Never copy `.github` — template CI must not overwrite the target repo (push 403).
     for (const entry of readdirSync(tmpDir)) {
-      if (entry === ".git") continue;
+      if (entry === ".git" || entry === ".github") continue;
       cpSync(`${tmpDir}/${entry}`, `${repoRoot}/${entry}`, {
         recursive: true,
         force: true,
@@ -199,6 +227,31 @@ async function cloneTemplate(repoRoot: string): Promise<void> {
 
     execSafe(`rm -rf "${tmpDir}"`);
   });
+}
+
+/**
+ * A full `git clone` of the upstream template includes `.github/workflows`. GitHub rejects
+ * pushes that create or update workflow files when the credential is a GitHub OAuth App token
+ * without the `workflow` scope. Remove the template’s `.github` tree and commit before the
+ * first push to the user’s remote (same intent as skipping `.github` in {@link cloneTemplate}).
+ */
+export async function stripTemplateGitHubDirectory(repoRoot: string): Promise<void> {
+  const dotGithub = resolvePath(repoRoot, ".github");
+  if (!existsSync(dotGithub)) return;
+
+  const rmTracked = execSafe(`git rm -r -f -- .github`, { cwd: repoRoot });
+  if (rmTracked.exitCode !== 0) {
+    rmSync(dotGithub, { recursive: true, force: true });
+    await execAsync("git add -A", { cwd: repoRoot });
+  }
+
+  const { stdout } = execSafe("git diff --cached --name-only", { cwd: repoRoot });
+  if (!stdout.trim()) return;
+
+  await execAsync(
+    `git -c user.email=bootstrap@gitops.local -c user.name="GitOps Bootstrap" commit --no-gpg-sign -m "chore: remove template .github before push (OAuth workflow scope)"`,
+    { cwd: repoRoot },
+  );
 }
 
 function envsubst(content: string, vars: Record<string, string>): string {

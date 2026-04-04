@@ -34,7 +34,7 @@ Or, if you already have Node.js >= 18:
 npx gitops-ai bootstrap
 ```
 
-The interactive wizard will prompt for your Git provider (GitHub or GitLab), create or use a repository from the [GitOps AI Template](https://gitlab.com/everythings-gonna-be-alright/gitops_ai_template), and run the full bootstrap.
+The interactive wizard will prompt for your Git provider (GitHub or GitLab), create or use a repository from the [GitOps AI Template](https://github.com/GitOpsAI/gitops-ai-template), and run the full bootstrap.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ On Linux the bootstrap installs k3s directly -- no Docker required.
 
 ## Template Repository
 
-This CLI bootstraps clusters from the [GitOps AI Template](https://gitlab.com/everythings-gonna-be-alright/gitops_ai_template) -- a ready-made GitOps repository structure that Flux uses as the single source of truth for your cluster.
+This CLI bootstraps clusters from the [GitOps AI Template](https://github.com/GitOpsAI/gitops-ai-template) -- a ready-made GitOps repository structure that Flux uses as the single source of truth for your cluster.
 
 The template contains the declarative Kubernetes manifests, HelmRelease definitions, Kustomization overlays, and SOPS encryption configuration that define a complete infrastructure stack. When you run `npx gitops-ai bootstrap`, the CLI forks this template into your GitLab namespace, customises it with your cluster variables (domain, tokens, component selections), and points Flux at the resulting repository. From that moment on, every `git push` to the repo triggers Flux reconciliation -- your cluster converges to match whatever is declared in Git.
 

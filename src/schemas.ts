@@ -96,9 +96,10 @@ export const OPTIONAL_COMPONENTS = COMPONENTS.filter(
 // ---------------------------------------------------------------------------
 
 export const KUBERNETES_VERSION = "1.35.1";
-export const SOURCE_GITLAB_HOST = "gitlab.com";
-export const SOURCE_PROJECT_PATH =
-  "everythings-gonna-be-alright/fluxcd_ai_template";
+/** Host for the canonical GitOps template repository (clone + template sync upstream). */
+export const SOURCE_TEMPLATE_HOST = "github.com";
+/** owner/repo for the template (used in HTTPS URL and GitHub API paths). */
+export const SOURCE_PROJECT_PATH = "GitOpsAI/gitops-ai-template";
 export const INSTALL_PLAN_PATH = "/tmp/installplan.json";
 
 export function isShortLivedGitHubToken(token: string): boolean {
@@ -111,6 +112,17 @@ export function shouldUseSshDeployKey(config: BootstrapConfig): boolean {
     isShortLivedGitHubToken(config.gitToken) &&
     !config.gitFluxToken
   );
+}
+
+/**
+ * Username for the Flux GitRepository HTTPS secret (`username` / `password` keys).
+ * GitHub rejects generic usernames with PATs in many clients — use `x-access-token`.
+ * GitLab expects `oauth2` for HTTPS + token.
+ */
+export function httpsGitCredentialUsername(
+  config: Pick<BootstrapConfig, "gitProvider">,
+): string {
+  return config.gitProvider === "github" ? "x-access-token" : "oauth2";
 }
 
 export function defaultSopsConfig(repoRoot: string): SopsConfig {

@@ -2,6 +2,12 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.2.1
+
+### Changed
+
+- **Upstream template** — the canonical GitOps template repository now lives on GitHub (`GitOpsAI/gitops-ai-template`).
+
 ## 1.2.0
 
 ### Added

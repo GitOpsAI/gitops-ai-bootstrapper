@@ -14,7 +14,7 @@ The wizard walks through several sections. You can press **Escape** to go back t
 
 Choose between two paths:
 
-- **Init a new gitops repo** -- the CLI clones the [template repository](https://gitlab.com/everythings-gonna-be-alright/fluxcd_ai_template), creates a new project under your namespace, and pushes the template as your starting point.
+- **Init a new gitops repo** -- the CLI clones the [template repository](https://github.com/GitOpsAI/gitops-ai-template), creates a new project under your namespace, and pushes the template as your starting point.
 - **I already have a repo** -- use an existing GitOps repository (e.g. one you previously bootstrapped or cloned manually).
 
 ### 2. Git Provider
