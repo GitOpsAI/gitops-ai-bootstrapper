@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { KubeConfig } from "@kubernetes/client-node";
+import type { CoreV1Api, KubeConfig } from "@kubernetes/client-node";
 import { execSafe } from "../src/utils/shell.js";
 import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
 import { COMPONENTS, type ProviderType } from "../src/schemas.js";
@@ -108,6 +108,54 @@ function crReady(obj: unknown): boolean {
     o.status?.conditions?.some((c) => c.type === "Ready" && c.status === "True") ??
     false
   );
+}
+
+function listItems(body: unknown): unknown[] {
+  const b = body as { items?: unknown[] };
+  return b.items ?? [];
+}
+
+/** One line per object: namespace/name, Ready/NotReady, short message (for failure diagnostics). */
+function fluxCrSummaryLine(namespace: string | undefined, name: string | undefined, obj: unknown): string {
+  const ready = crReady(obj) ? "Ready" : "NotReady";
+  const o = obj as {
+    status?: {
+      conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+    };
+  };
+  const readyCond = o.status?.conditions?.find((c) => c.type === "Ready");
+  const detail =
+    readyCond && readyCond.status !== "True"
+      ? ` ${[readyCond.reason, readyCond.message].filter(Boolean).join(": ").slice(0, 140)}`
+      : "";
+  return `${namespace ?? "?"}/${name ?? "?"}  ${ready}${detail}`;
+}
+
+function printFluxListSummary(label: string, listBody: unknown): void {
+  const items = listItems(listBody);
+  console.log(`${label} (${items.length})`);
+  for (const item of items) {
+    const meta = (item as { metadata?: { namespace?: string; name?: string } }).metadata;
+    console.log(fluxCrSummaryLine(meta?.namespace, meta?.name, item));
+  }
+}
+
+async function printFluxSystemEventsSummary(core: CoreV1Api): Promise<void> {
+  const ev = await core.listNamespacedEvent({ namespace: FLUX_SYSTEM_NS });
+  const items = ev.items ?? [];
+  console.log(`events in ${FLUX_SYSTEM_NS} (${items.length}, showing last 25)`);
+  const sorted = [...items].sort((a, b) => {
+    const ta = Date.parse(String(a.lastTimestamp ?? a.eventTime ?? 0)) || 0;
+    const tb = Date.parse(String(b.lastTimestamp ?? b.eventTime ?? 0)) || 0;
+    return ta - tb;
+  });
+  for (const e of sorted.slice(-25)) {
+    const o = e.involvedObject;
+    const msg = (e.message ?? "").replace(/\s+/g, " ").slice(0, 160);
+    console.log(
+      `${e.type ?? "?"}\t${e.reason ?? "?"}\t${o?.kind ?? "?"}/${o?.namespace ? `${o.namespace}/` : ""}${o?.name ?? "?"} ${msg}`,
+    );
+  }
 }
 
 function log(msg: string): void {
@@ -327,45 +375,22 @@ async function logFluxDiagnostics(context: string): Promise<void> {
     }
   });
 
-  await dump("gitrepositories (list)", async () => {
+  await dump("gitrepositories", async () => {
     const list = await custom.listCustomObjectForAllNamespaces({
       group: SOURCE_GROUP,
       version: SOURCE_V1,
       plural: "gitrepositories",
     });
-    console.log(JSON.stringify(list, null, 2));
+    printFluxListSummary("GitRepository", list);
   });
 
-  await dump("gitrepositories (per-object)", async () => {
-    const list = await custom.listCustomObjectForAllNamespaces({
-      group: SOURCE_GROUP,
-      version: SOURCE_V1,
-      plural: "gitrepositories",
-    });
-    const body = list as { items?: Array<{ metadata?: { namespace?: string; name?: string } }> };
-    for (const item of body.items ?? []) {
-      const ns = item.metadata?.namespace;
-      const name = item.metadata?.name;
-      if (!ns || !name) continue;
-      const obj = await custom.getNamespacedCustomObject({
-        group: SOURCE_GROUP,
-        version: SOURCE_V1,
-        namespace: ns,
-        plural: "gitrepositories",
-        name,
-      });
-      console.log(`--- ${ns}/${name} ---`);
-      console.log(JSON.stringify(obj, null, 2));
-    }
-  });
-
-  await dump("kustomizations (list)", async () => {
+  await dump("kustomizations", async () => {
     const list = await custom.listCustomObjectForAllNamespaces({
       group: KUSTOMIZE_GROUP,
       version: KUSTOMIZE_V1,
       plural: "kustomizations",
     });
-    console.log(JSON.stringify(list, null, 2));
+    printFluxListSummary("Kustomization", list);
   });
 
   await dump("fluxinstance", async () => {
@@ -374,32 +399,20 @@ async function logFluxDiagnostics(context: string): Promise<void> {
       version: FLUX_INSTANCE_VERSION,
       plural: FLUX_INSTANCE_PLURAL,
     });
-    console.log(JSON.stringify(list, null, 2));
+    printFluxListSummary("FluxInstance", list);
   });
 
-  await dump("fluxinstance get flux", async () => {
-    const obj = await custom.getNamespacedCustomObject({
-      group: FLUX_INSTANCE_GROUP,
-      version: FLUX_INSTANCE_VERSION,
-      namespace: FLUX_SYSTEM_NS,
-      plural: FLUX_INSTANCE_PLURAL,
-      name: "flux",
-    });
-    console.log(JSON.stringify(obj, null, 2));
-  });
-
-  await dump("helmreleases (list)", async () => {
+  await dump("helmreleases", async () => {
     const list = await custom.listCustomObjectForAllNamespaces({
       group: HELM_GROUP,
       version: HELM_V2,
       plural: "helmreleases",
     });
-    console.log(JSON.stringify(list, null, 2));
+    printFluxListSummary("HelmRelease", list);
   });
 
   await dump("events flux-system", async () => {
-    const ev = await core.listNamespacedEvent({ namespace: FLUX_SYSTEM_NS });
-    console.log(JSON.stringify(ev, null, 2));
+    await printFluxSystemEventsSummary(core);
   });
 
   await dump("source-controller logs", async () => {
@@ -537,7 +550,12 @@ describe("Integration", { timeout: 1_800_000 }, () => {
       namespace: FLUX_SYSTEM_NS,
       labelSelector: "app.kubernetes.io/name=flux-operator",
     });
-    console.log(JSON.stringify(list.items, null, 2));
+    for (const p of list.items ?? []) {
+      const ready = p.status?.conditions?.find((c) => c.type === "Ready")?.status ?? "?";
+      console.log(
+        `${p.metadata?.name ?? "?"}\t${p.status?.phase ?? "?"}\tReady=${ready}`,
+      );
+    }
   });
 
   it("should reconcile Flux Kustomizations", { timeout: 360_000 }, async (t) => {
@@ -596,51 +614,59 @@ describe("Integration", { timeout: 1_800_000 }, () => {
     const kc = kubeConfigFromDefault();
     const { core, custom } = makeClients(kc);
 
-    const sections: [string, () => Promise<unknown>][] = [
-      ["Namespaces", () => core.listNamespace()],
-      ["Pods (all)", () => core.listPodForAllNamespaces()],
-      [
-        "Kustomizations",
-        () =>
-          custom.listCustomObjectForAllNamespaces({
-            group: KUSTOMIZE_GROUP,
-            version: KUSTOMIZE_V1,
-            plural: "kustomizations",
-          }),
-      ],
-      [
-        "GitRepositories",
-        () =>
-          custom.listCustomObjectForAllNamespaces({
-            group: SOURCE_GROUP,
-            version: SOURCE_V1,
-            plural: "gitrepositories",
-          }),
-      ],
-      [
-        "HelmRepositories",
-        () =>
-          custom.listCustomObjectForAllNamespaces({
-            group: SOURCE_GROUP,
-            version: SOURCE_V1,
-            plural: "helmrepositories",
-          }),
-      ],
-      [
-        "HelmReleases",
-        () =>
-          custom.listCustomObjectForAllNamespaces({
-            group: HELM_GROUP,
-            version: HELM_V2,
-            plural: "helmreleases",
-          }),
-      ],
-    ];
+    console.log("\n── Namespaces ──");
+    const nsList = await core.listNamespace();
+    const nsNames = (nsList.items ?? [])
+      .map((n) => n.metadata?.name)
+      .filter((x): x is string => Boolean(x))
+      .sort();
+    console.log(`count: ${nsNames.length}`);
+    for (const n of nsNames) console.log(n);
 
-    for (const [label, fetch] of sections) {
-      const data = await fetch();
-      console.log(`\n── ${label} ──`);
-      console.log(JSON.stringify(data, null, 2));
+    console.log("\n── Pods (all namespaces) ──");
+    const podList = await core.listPodForAllNamespaces();
+    const pods = podList.items ?? [];
+    const maxPods = 80;
+    console.log(`count: ${pods.length} (showing first ${Math.min(maxPods, pods.length)})`);
+    for (const p of pods.slice(0, maxPods)) {
+      console.log(
+        `${p.metadata?.namespace ?? "?"}/${p.metadata?.name ?? "?"}  ${p.status?.phase ?? "?"}`,
+      );
     }
+    if (pods.length > maxPods) {
+      console.log(`… and ${pods.length - maxPods} more`);
+    }
+
+    const kustomizations = await custom.listCustomObjectForAllNamespaces({
+      group: KUSTOMIZE_GROUP,
+      version: KUSTOMIZE_V1,
+      plural: "kustomizations",
+    });
+    console.log("\n── Kustomizations ──");
+    printFluxListSummary("Kustomization", kustomizations);
+
+    const gitrepos = await custom.listCustomObjectForAllNamespaces({
+      group: SOURCE_GROUP,
+      version: SOURCE_V1,
+      plural: "gitrepositories",
+    });
+    console.log("\n── GitRepositories ──");
+    printFluxListSummary("GitRepository", gitrepos);
+
+    const helmrepos = await custom.listCustomObjectForAllNamespaces({
+      group: SOURCE_GROUP,
+      version: SOURCE_V1,
+      plural: "helmrepositories",
+    });
+    console.log("\n── HelmRepositories ──");
+    printFluxListSummary("HelmRepository", helmrepos);
+
+    const helmreleases = await custom.listCustomObjectForAllNamespaces({
+      group: HELM_GROUP,
+      version: HELM_V2,
+      plural: "helmreleases",
+    });
+    console.log("\n── HelmReleases ──");
+    printFluxListSummary("HelmRelease", helmreleases);
   });
 });
