@@ -19,7 +19,7 @@ import { saveInstallPlan, loadInstallPlan, clearInstallPlan } from "../utils/con
 import { execAsync, exec, execSafe, commandExists } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { ensureAll } from "../core/dependencies.js";
-import { runBootstrap } from "../core/bootstrap-runner.js";
+import { runBootstrap, stripTemplateGitHubDirectory } from "../core/bootstrap-runner.js";
 import * as k8s from "../core/kubernetes.js";
 import * as flux from "../core/flux.js";
 import {
@@ -937,6 +937,8 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
   }
 
   const cloneDir = wizard.repoLocalPath || wizard.repoName;
+  /** Set when we `git clone` the template; full clone includes `.github` — strip before push (OAuth lacks `workflow` scope). */
+  let clonedTemplateFromUpstream = false;
 
   if (existsSync(cloneDir)) {
     log.warn(`Directory './${cloneDir}' already exists locally`);
@@ -956,6 +958,7 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
       exec(`git remote add origin "${httpUrl}"`, { cwd: cloneDir });
     }
   } else {
+    clonedTemplateFromUpstream = true;
     const cloneRef = wizard.templateTag || "main";
     let clonedRef = cloneRef;
     try {
@@ -983,7 +986,10 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
 
   const authRemote = provider.getAuthRemoteUrl(host, pathWithNs, wizard.gitToken);
 
-  await withSpinner(`Pushing to ${pathWithNs}`, () => {
+  await withSpinner(`Pushing to ${pathWithNs}`, async () => {
+    if (clonedTemplateFromUpstream) {
+      await stripTemplateGitHubDirectory(cloneDir);
+    }
     const forceFlag = repoExisted ? " --force" : "";
     return execAsync(
       `git push -u "${authRemote}" "${wizard.repoBranch}"${forceFlag} --quiet`,

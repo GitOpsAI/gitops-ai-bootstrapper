@@ -229,6 +229,31 @@ async function cloneTemplate(repoRoot: string): Promise<void> {
   });
 }
 
+/**
+ * A full `git clone` of the upstream template includes `.github/workflows`. GitHub rejects
+ * pushes that create or update workflow files when the credential is a GitHub OAuth App token
+ * without the `workflow` scope. Remove the template’s `.github` tree and commit before the
+ * first push to the user’s remote (same intent as skipping `.github` in {@link cloneTemplate}).
+ */
+export async function stripTemplateGitHubDirectory(repoRoot: string): Promise<void> {
+  const dotGithub = resolvePath(repoRoot, ".github");
+  if (!existsSync(dotGithub)) return;
+
+  const rmTracked = execSafe(`git rm -r -f -- .github`, { cwd: repoRoot });
+  if (rmTracked.exitCode !== 0) {
+    rmSync(dotGithub, { recursive: true, force: true });
+    await execAsync("git add -A", { cwd: repoRoot });
+  }
+
+  const { stdout } = execSafe("git diff --cached --name-only", { cwd: repoRoot });
+  if (!stdout.trim()) return;
+
+  await execAsync(
+    `git -c user.email=bootstrap@gitops.local -c user.name="GitOps Bootstrap" commit --no-gpg-sign -m "chore: remove template .github before push (OAuth workflow scope)"`,
+    { cwd: repoRoot },
+  );
+}
+
 function envsubst(content: string, vars: Record<string, string>): string {
   return Object.entries(vars).reduce(
     (acc, [key, value]) => acc.replaceAll(`\${${key}}`, value),
