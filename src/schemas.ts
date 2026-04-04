@@ -43,6 +43,8 @@ export type BootstrapConfig = ClusterConfig &
   GitConfig &
   SecretsConfig & {
     selectedComponents: string[];
+    /** Tag or branch used for the template clone */
+    templateRef?: string;
   };
 
 // Re-export for convenience

@@ -2,14 +2,16 @@
 import { Command } from "commander";
 import { bootstrap, openclawPair } from "./commands/bootstrap.js";
 import { sops } from "./commands/sops.js";
+import { registerTemplateSyncCommand } from "./commands/template-sync.js";
+import { readPackageVersion } from "./core/template-sync.js";
 import pc from "picocolors";
 
 const program = new Command();
 
 program
-  .name("flux-cli")
+  .name("gitops-ai")
   .description("Flux GitOps cluster bootstrap CLI with interactive TUI")
-  .version("1.0.0");
+  .version(readPackageVersion());
 
 program
   .command("bootstrap")
@@ -47,5 +49,7 @@ program
       process.exit(1);
     }
   });
+
+registerTemplateSyncCommand(program);
 
 program.parse();

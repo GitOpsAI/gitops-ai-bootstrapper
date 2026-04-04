@@ -115,7 +115,7 @@ export async function runBootstrap(
   }
 
   // ── Clone template if not present ─────────────────────────────────
-  const templateDir = `${repoRoot}/clusters/_default-template`;
+  const templateDir = `${repoRoot}/clusters/_template`;
 
   if (!existsSync(templateDir)) {
     await cloneTemplate(repoRoot);

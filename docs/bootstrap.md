@@ -76,8 +76,21 @@ Prompted conditionally based on your selections:
 
 ### 9. Network
 
-- **Allowed IPs** -- CIDR ranges allowed to access the ingress controller (default: `0.0.0.0/0`).
-- **Cluster IP** -- the IP that DNS records point to. Auto-detected via `ifconfig.me` for public setups; defaults to `127.0.0.1` when DNS management is disabled. When DNS is disabled, this prompt always appears (even on resumed runs) so you can confirm the correct local IP.
+The wizard asks **"How will you access the cluster?"** and adapts the remaining prompts based on your answer.
+
+#### Public
+
+1. **Public IP detection** -- the CLI silently probes `ifconfig.me`, `api.ipify.org`, and `icanhazip.com` in the background (started when the wizard opens). The detected IP is pre-filled in the next prompt; you can accept it or type a different one.
+2. **Restrict ingress access?**
+   - *Open to everyone* -- sets the ingress allowlist to `0.0.0.0/0` (any source IP can reach the cluster).
+   - *Restrict to specific IPs* -- prompts for one or more CIDRs (comma-separated, e.g. `203.0.113.0/24,198.51.100.5/32`). Only those ranges will be allowed through ingress.
+
+#### Local only (localhost / LAN)
+
+1. **Cluster IP** -- the CLI detects non-internal IPv4 addresses from your network interfaces and presents them as options (with the interface name as a hint). The list always includes `127.0.0.1 (localhost)` and an *Enter manually* fallback. If no LAN interfaces are found, a free-text input defaults to `127.0.0.1`.
+2. **Allowed CIDRs** -- defaults to the standard RFC 1918 private ranges (`10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16`). You can accept or customise.
+
+All network values are written into `clusters/<name>/cluster-sync.yaml` and can be changed later via a Git commit.
 
 ### Review and Confirm
 
@@ -99,19 +112,19 @@ Once you confirm, the bootstrap proceeds through these automated phases:
 
 Installs missing CLI tools automatically:
 
-| Tool | macOS | Linux |
-|------|-------|-------|
-| `git` | Homebrew | apt |
-| `kubectl` | Homebrew | apt / curl |
-| `helm` | Homebrew | install script |
-| `flux-operator` | Homebrew | curl |
-| `sops`, `age` | Homebrew | apt / curl |
-| `k3d` | Homebrew | curl (macOS and CI only) |
+| Tool            | macOS    | Linux                    |
+|-----------------|----------|--------------------------|
+| `git`           | Homebrew | apt                      |
+| `kubectl`       | Homebrew | apt / curl               |
+| `helm`          | Homebrew | install script           |
+| `flux-operator` | Homebrew | curl                     |
+| `sops`, `age`   | Homebrew | apt / curl               |
+| `k3d`           | Homebrew | curl (macOS and CI only) |
 
 ### Phase 3: Kubernetes Cluster
 
 - **macOS / CI**: creates a k3d cluster (Kubernetes in Docker)
-- **Linux**: installs k3s (lightweight Kubernetes)
+- **Linux**: installs k3s (lightweight Kubernetes). After bootstrap, you can add more nodes to scale horizontally -- see [Scaling the Cluster](scaling.md).
 
 Sets up kubeconfig and waits for the cluster to become ready.
 
@@ -126,10 +139,11 @@ Git authentication for Flux depends on your provider and login method:
 
 ### Phase 5: Cluster Template
 
-1. Copies `clusters/_default-template` to `clusters/<your-cluster-name>`
+1. Copies `clusters/_template` to `clusters/<your-cluster-name>`
 2. Renders `cluster-sync.yaml` with your cluster variables (name, domain, IP, email, allowed IPs)
 3. Removes directories for disabled components
 4. Updates `kustomization.yaml` to exclude disabled components
+5. Writes `template-sync-metadata.yaml` coordinates so `gitops-ai template sync` knows which upstream to track
 
 ### Phase 6: SOPS Encryption
 
@@ -150,7 +164,7 @@ Commits all changes (cluster config + encrypted secrets) and pushes to your Git 
 
 ### Phase 9: Post-Bootstrap
 
-- If DNS management is disabled, offers to add `/etc/hosts` entries for components with subdomains (e.g. `127.0.0.1 flux.homelab.click`). This requires `sudo` -- macOS will prompt for your system password.
+- **`/etc/hosts` suggestion** -- shown when the cluster IP is a local/private address (127.x, 10.x, 172.16-31.x, 192.168.x) **or** when automatic DNS management is disabled. The CLI lists all component subdomains (e.g. `192.168.1.50 flux.homelab.click`) and offers to append them to `/etc/hosts` in one step. This requires `sudo` -- macOS will prompt for your system password.
 - Displays a summary with cluster details and next steps
 - Cleans up the saved install plan
 
