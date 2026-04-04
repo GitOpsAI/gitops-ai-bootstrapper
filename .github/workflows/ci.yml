@@ -1,0 +1,262 @@
+# ---------------------------------------------------------------------------
+# CI pipeline – mirrors .gitlab-ci.yml
+# Stages: test → security → integration → tag → publish
+# ---------------------------------------------------------------------------
+
+name: CI
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+    tags: ["*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ---------------------------------------------------------------------------
+# Reusable defaults
+# ---------------------------------------------------------------------------
+defaults:
+  run:
+    shell: sh
+
+# ---------------------------------------------------------------------------
+# Stage: test (PRs + main)
+# ---------------------------------------------------------------------------
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    container:
+      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Type-check
+        run: npx tsc --noEmit
+
+  test-template-sync:
+    name: Test – template sync
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    container:
+      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+    env:
+      GIT_TEST_BRANCH: ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: apk add --no-cache git
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@test.local"
+          git config --global user.name "CI"
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Run template-sync tests
+        run: node --import tsx --test tests/template-sync.test.ts
+
+  # ---------------------------------------------------------------------------
+  # Stage: security (PRs + main)
+  # ---------------------------------------------------------------------------
+
+  npm-audit:
+    name: Security – npm audit
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    container:
+      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  sast-semgrep:
+    name: Security – Semgrep SAST
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    container:
+      image: semgrep/semgrep:1.157.0@sha256:17d89ddd91a7729bbd5de09402f7f79a70204289e2a94635086e9db532a495f2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: >-
+          semgrep scan
+          --config p/typescript
+          --config p/nodejs
+          --config p/owasp-top-ten
+          --config p/command-injection
+          --error --json --output semgrep-report.json
+          src/
+      - name: Upload Semgrep report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+          retention-days: 30
+
+  trivy-scan:
+    name: Security – Trivy
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    container:
+      image: aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
+      options: --entrypoint ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan (vulnerabilities)
+        run: trivy fs --severity HIGH,CRITICAL --exit-code 1 --format json --output trivy-report.json .
+      - name: Trivy secret scan
+        run: trivy fs --scanners secret --exit-code 1 .
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Stage: integration (PRs only)
+  # ---------------------------------------------------------------------------
+
+  integration-test:
+    name: Integration tests
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    # Docker-in-Docker via the host Docker socket (ubuntu-24.04 runners include Docker)
+    container:
+      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    env:
+      DOCKER_HOST: unix:///var/run/docker.sock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: apk add --no-cache docker-cli git curl openssl bash sudo
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Run integration tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx tsx --test tests/integration.test.ts
+      - name: Cleanup test branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            --delete "ci-test-${{ github.run_id }}" 2>/dev/null || true
+
+  # ---------------------------------------------------------------------------
+  # Stage: tag (auto-tag on merge to main)
+  # ---------------------------------------------------------------------------
+
+  create-tag:
+    name: Auto-tag on merge to main
+    runs-on: ubuntu-24.04
+    needs: [typecheck, test-template-sync, npm-audit, sast-semgrep, trivy-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    container:
+      image: alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+      - name: Install tools
+        run: apk add --no-cache git curl jq
+      - name: Determine version bump from PR branch name
+        id: bump
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          SOURCE_BRANCH=$(curl -sf \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/commits/${COMMIT_SHA}/pulls" \
+            | jq -r '.[0].head.ref // empty')
+
+          echo "Source branch: ${SOURCE_BRANCH:-unknown}"
+
+          case "$SOURCE_BRANCH" in
+            major|major/*|breaking|breaking/*) BUMP="major" ;;
+            next|next/*|feature/*)             BUMP="minor" ;;
+            bugfix|bugfix/*|fix|fix/*|hotfix|hotfix/*) BUMP="patch" ;;
+            *)                                 BUMP="skip" ;;
+          esac
+
+          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
+      - name: Compute and push new tag
+        if: steps.bump.outputs.bump != 'skip'
+        env:
+          BUMP: ${{ steps.bump.outputs.bump }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          git fetch --tags
+
+          LATEST=$(git tag -l '[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$LATEST" ]; then
+            VERSION="1.0.0"
+          else
+            MAJOR=$(echo "$LATEST" | cut -d. -f1)
+            MINOR=$(echo "$LATEST" | cut -d. -f2)
+            PATCH=$(echo "$LATEST" | cut -d. -f3)
+            case "$BUMP" in
+              major) VERSION="$((MAJOR + 1)).0.0" ;;
+              minor) VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+              patch) VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+            esac
+          fi
+
+          echo "Tagging ${VERSION}"
+          git tag "${VERSION}"
+          git push "https://x-access-token:${GH_PAT}@github.com/${REPO}.git" "${VERSION}"
+
+  # ---------------------------------------------------------------------------
+  # Stage: publish (npm publish on semver tag)
+  # ---------------------------------------------------------------------------
+
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-24.04
+    if: >
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/') &&
+      contains(github.ref, '.')
+    container:
+      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate with npm registry
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Stamp package version
+        run: npm version "${{ github.ref_name }}" --no-git-tag-version --allow-same-version
+      - name: Build
+        run: npm run build
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
