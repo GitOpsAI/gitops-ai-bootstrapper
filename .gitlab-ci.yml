@@ -136,14 +136,19 @@ create-tag:
 
       echo "Source branch: ${SOURCE_BRANCH:-unknown}"
 
-      case "$SOURCE_BRANCH" in
+        case "$SOURCE_BRANCH" in
         major|major/*|breaking|breaking/*) BUMP="major" ;;
         next|next/*|feature/*)   BUMP="minor" ;;
         bugfix|bugfix/*|fix|fix/*|hotfix|hotfix/*) BUMP="patch" ;;
-        *)                  BUMP="patch" ;;
+        *)                  BUMP="skip" ;;
       esac
 
       echo "Version bump: ${BUMP}"
+
+      if [ "$BUMP" = "skip" ]; then
+        echo "Branch '${SOURCE_BRANCH:-unknown}' does not match a known naming pattern – skipping tag creation."
+        exit 0
+      fi
 
       LATEST=$(git tag -l '[0-9]*' --sort=-v:refname | head -1)
       if [ -z "$LATEST" ]; then
