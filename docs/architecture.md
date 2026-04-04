@@ -9,7 +9,7 @@ The system consists of two repositories and a Kubernetes cluster:
 ```mermaid
 graph LR
     subgraph repos [Git Repositories]
-        Template["fluxcd_ai_template<br/>(source template)"]
+        Template["gitops-ai-template<br/>(source template)"]
         UserRepo["your-namespace/fluxcd_ai<br/>(your GitOps repo)"]
     end
 
@@ -33,7 +33,7 @@ graph LR
     FluxInst -->|"deploys"| Components
 ```
 
-1. **Template repository** (`gitlab.com/everythings-gonna-be-alright/fluxcd_ai_template`) -- contains the default cluster layout, Helm values, and component manifests. You never modify this repo directly.
+1. **Template repository** ([`github.com/GitOpsAI/gitops-ai-template`](https://github.com/GitOpsAI/gitops-ai-template)) -- contains the default cluster layout, Helm values, and component manifests. You never modify this repo directly.
 
 2. **Your GitOps repository** -- a fork/clone of the template, owned by your GitHub or GitLab namespace. This is the single source of truth for your cluster. All changes flow through Git. The repo includes `template-sync-metadata.yaml` (template semver and upstream coordinates); merging upstream updates is described in [Template synchronization](template-sync.md).
 
@@ -49,7 +49,7 @@ flowchart TD
     LoadPlan --> Wizard
     Wizard --> SavePlan["Save install plan"]
     SavePlan --> RepoSetup{"Setup mode?"}
-    RepoSetup -->|New| Clone["Clone template +<br/>create GitLab project"]
+    RepoSetup -->|New| Clone["Clone template +<br/>create remote project"]
     RepoSetup -->|Existing| UseExisting["Use existing repo"]
     Clone --> GitCreds["Configure git credentials"]
     UseExisting --> GitCreds

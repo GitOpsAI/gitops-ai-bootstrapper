@@ -1,7 +1,15 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  realpathSync,
+  writeFileSync,
+  existsSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 
@@ -22,8 +30,11 @@ import {
 // ---------------------------------------------------------------------------
 
 const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const TMP_BASE = join(PROJECT_ROOT, ".test-tmp");
-mkdirSync(TMP_BASE, { recursive: true });
+// Keep fixtures outside the workspace so `git` cannot discover the bootstrapper's `.git`
+// when Actions uses a real clone (git installed before checkout).
+const TMP_BASE_RAW = join(tmpdir(), "gitops-ai-template-sync-test");
+mkdirSync(TMP_BASE_RAW, { recursive: true });
+const TMP_BASE = realpathSync(TMP_BASE_RAW);
 
 /**
  * Branch used in git integration tests. In GitLab CI, `ci-<pipeline_id>` avoids
@@ -76,9 +87,9 @@ function createLinkedRepos(): { upstream: string; fork: string } {
     'version: "1.0.0"',
     "schema: 1",
     "upstream:",
-    "  provider: gitlab",
-    "  path: test/template",
-    "  host: gitlab.com",
+    "  provider: github",
+    "  path: GitOpsAI/gitops-ai-template",
+    "  host: github.com",
   ].join("\n"));
 
   mkdirSync(join(staging, "templates", "system"), { recursive: true });

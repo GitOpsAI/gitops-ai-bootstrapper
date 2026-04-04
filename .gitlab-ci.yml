@@ -32,7 +32,8 @@ test-template-sync:
     - git config --global user.name "CI"
     - npm ci --ignore-scripts
   script:
-    - node --import tsx --test tests/template-sync.test.ts
+    # tsx --test avoids test-runner IPC errors seen with node --import tsx --test
+    - npm run test:sync
   rules:
     - if: $CI_MERGE_REQUEST_IID
     - if: $CI_COMMIT_BRANCH == "main"

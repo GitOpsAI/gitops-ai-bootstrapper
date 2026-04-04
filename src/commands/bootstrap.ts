@@ -33,7 +33,7 @@ import {
   DNS_TLS_COMPONENT_IDS,
   MONITORING_COMPONENT_IDS,
   OPTIONAL_COMPONENTS,
-  SOURCE_GITLAB_HOST,
+  SOURCE_TEMPLATE_HOST,
   SOURCE_PROJECT_PATH,
   type BootstrapConfig,
   type ComponentDef,
@@ -961,7 +961,7 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
     try {
       await withSpinner(`Cloning template (${cloneRef})`, () =>
         execAsync(
-          `git clone --quiet --branch "${cloneRef}" "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
+          `git clone --quiet --branch "${cloneRef}" "https://${SOURCE_TEMPLATE_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
         ),
       );
     } catch {
@@ -969,7 +969,7 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
       clonedRef = "main";
       await withSpinner("Cloning template (main)", () =>
         execAsync(
-          `git clone --quiet --branch "main" "https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
+          `git clone --quiet --branch "main" "https://${SOURCE_TEMPLATE_HOST}/${SOURCE_PROJECT_PATH}.git" "${cloneDir}"`,
         ),
       );
     }

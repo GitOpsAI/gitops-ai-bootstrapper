@@ -4,14 +4,14 @@ import { fileURLToPath } from "node:url";
 import { log, withSpinner } from "../utils/log.js";
 import { execAsync, execSafe } from "../utils/shell.js";
 import {
-  SOURCE_GITLAB_HOST,
+  SOURCE_TEMPLATE_HOST,
   SOURCE_PROJECT_PATH,
 } from "../schemas.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** HTTPS URL for the canonical GitOps template (GitLab). */
-export const UPSTREAM_GIT_URL = `https://${SOURCE_GITLAB_HOST}/${SOURCE_PROJECT_PATH}.git`;
+/** HTTPS URL for the canonical GitOps template on GitHub. */
+export const UPSTREAM_GIT_URL = `https://${SOURCE_TEMPLATE_HOST}/${SOURCE_PROJECT_PATH}.git`;
 
 export function readPackageVersion(): string {
   try {
@@ -79,10 +79,15 @@ function unrelatedHistoryHint(repoRoot: string): string {
 // ---------------------------------------------------------------------------
 
 export async function fetchTemplateTags(): Promise<string[]> {
-  const encoded = encodeURIComponent(SOURCE_PROJECT_PATH);
-  const url = `https://${SOURCE_GITLAB_HOST}/api/v4/projects/${encoded}/repository/tags?per_page=50&order_by=version&sort=desc`;
+  const url = `https://api.github.com/repos/${SOURCE_PROJECT_PATH}/tags?per_page=100`;
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers });
     if (!res.ok) return [];
     const tags = (await res.json()) as { name: string }[];
     return tags.map((t) => t.name);
@@ -328,7 +333,7 @@ export async function mergeUpstreamTemplate(
 
   if (!hasCommonAncestor(repoRoot) && !allowUnrelatedHistories) {
     throw new Error(
-      "No common Git ancestor with the upstream template on GitLab. " +
+      "No common Git ancestor with the upstream template on GitHub. " +
         unrelatedHistoryHint(repoRoot) +
         " `--ref` is the branch/tag on upstream; `--remote` is only the local remote name (default: upstream).",
     );

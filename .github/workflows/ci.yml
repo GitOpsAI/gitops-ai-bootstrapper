@@ -32,7 +32,7 @@ defaults:
 
 jobs:
   typecheck:
-    name: Typecheck
+    name: Test · Typecheck
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
@@ -45,7 +45,7 @@ jobs:
         run: npx tsc --noEmit
 
   test-template-sync:
-    name: Test – template sync
+    name: Test · Template sync
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
@@ -53,9 +53,9 @@ jobs:
     env:
       GIT_TEST_BRANCH: ci-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install system deps
+      - name: Install git for checkout
         run: apk add --no-cache git
+      - uses: actions/checkout@v4
       - name: Configure git identity
         run: |
           git config --global user.email "ci@test.local"
@@ -63,14 +63,16 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Run template-sync tests
-        run: node --import tsx --test tests/template-sync.test.ts
+        # Use `tsx --test` (not `node --import tsx --test`): the latter can break the test runner’s
+        # subprocess IPC with "Unable to deserialize cloned data due to invalid or unsupported version".
+        run: npm run test:sync
 
   # ---------------------------------------------------------------------------
   # Stage: security (PRs + main)
   # ---------------------------------------------------------------------------
 
   npm-audit:
-    name: Security – npm audit
+    name: Security · npm audit
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
@@ -83,7 +85,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   sast-semgrep:
-    name: Security – Semgrep SAST
+    name: Security · Semgrep
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
@@ -108,7 +110,7 @@ jobs:
           retention-days: 30
 
   trivy-scan:
-    name: Security – Trivy
+    name: Security · Trivy
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
@@ -133,24 +135,27 @@ jobs:
   # ---------------------------------------------------------------------------
 
   integration-test:
-    name: Integration tests
+    name: Integration · Bootstrap
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
-    # Docker-in-Docker via the host Docker socket (ubuntu-24.04 runners include Docker)
-    container:
-      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
-    env:
-      DOCKER_HOST: unix:///var/run/docker.sock
+    # Bootstrap git push + branch cleanup (GITHUB_TOKEN needs write to the repo).
+    permissions:
+      contents: write
+    # Run on the VM (not a container): actions/checkout in node:22-alpine often leaves a
+    # tree without .git even if git is apk-installed first; the hosted runner has git + Docker.
     steps:
       - uses: actions/checkout@v4
-      - name: Install system deps
-        run: apk add --no-cache docker-cli git curl openssl bash sudo
+      - name: Verify git clone
+        run: git rev-parse --is-inside-work-tree && git status -sb
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Run integration tests
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx tsx --test tests/integration.test.ts
       - name: Cleanup test branch
         if: always()
@@ -166,7 +171,7 @@ jobs:
   # ---------------------------------------------------------------------------
 
   create-tag:
-    name: Auto-tag on merge to main
+    name: Release · Auto-tag
     runs-on: ubuntu-24.04
     needs: [typecheck, test-template-sync, npm-audit, sast-semgrep, trivy-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -236,7 +241,7 @@ jobs:
   # ---------------------------------------------------------------------------
 
   publish-npm:
-    name: Publish to npm
+    name: Release · npm publish
     runs-on: ubuntu-24.04
     if: >
       github.event_name == 'push' &&

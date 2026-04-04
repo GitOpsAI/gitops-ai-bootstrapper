@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
@@ -122,12 +123,27 @@ export async function createSecret(
   namespace: string,
   data: Record<string, string>,
 ): Promise<void> {
-  const literals = Object.entries(data)
-    .map(([k, v]) => `--from-literal=${k}='${v}'`)
-    .join(" ");
-  const cmd = `kubectl create secret generic ${name} --namespace=${namespace} ${literals}`;
+  // Avoid shell: tokens must not pass through sh quoting (Flux Git auth failures).
+  const args = [
+    "create",
+    "secret",
+    "generic",
+    name,
+    `--namespace=${namespace}`,
+    ...Object.entries(data).flatMap(([k, v]) => ["--from-literal", `${k}=${v}`]),
+  ];
   log.detail(`kubectl create secret generic ${name} --namespace=${namespace}`);
-  await execAsync(cmd);
+  const r = spawnSync("kubectl", args, {
+    encoding: "utf-8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  if (r.error) throw r.error;
+  if (r.status !== 0) {
+    throw new Error(
+      r.stderr?.trim() ||
+        `kubectl create secret failed (exit ${r.status ?? 1})`,
+    );
+  }
 }
 
 export function secretExists(name: string, namespace: string): boolean {
