@@ -47,7 +47,7 @@ export async function runBootstrap(
   const provider = await getProvider(config.gitProvider ?? "gitlab");
 
   // ── CLI dependencies ──────────────────────────────────────────────
-  const tools = ["git", "kubectl", "helm", "sops", "age"];
+  const tools = ["git", "flux-operator", "sops", "age"];
   if (isMacOS() || isCI()) tools.push("k3d");
   log.step("Installing CLI dependencies");
   await ensureAll(tools);
@@ -105,8 +105,7 @@ export async function runBootstrap(
   log.success(`Kubeconfig: ${kubeconfigPath}`);
   await k8s.waitForCluster();
 
-  // ── Flux Operator ──────────────────────────────────────────────────
-  await flux.installOperator();
+  await k8s.createNamespace("flux-system");
 
   // ── Git auth secret ────────────────────────────────────────────────
   if (shouldUseSshDeployKey(config)) {
@@ -136,6 +135,11 @@ export async function runBootstrap(
   if (!existsSync(templateDir)) {
     await cloneTemplate(repoRoot);
   }
+
+  // Root `flux-instance.yaml` is required for `flux-operator install -f`. A full template
+  // clone copies it, but existing repos may already have `clusters/_template` from an older
+  // layout without this file — fetch the canonical manifest from the template default branch.
+  await ensureFluxInstanceYaml(repoRoot);
 
   // ── Cluster template ──────────────────────────────────────────────
   const clusterDir = `${repoRoot}/clusters/${config.clusterName}`;
@@ -186,8 +190,8 @@ export async function runBootstrap(
   // ── Flux Instance ─────────────────────────────────────────────────
   let fluxInstanceInstalled = false;
 
-  if (existsSync(`${repoRoot}/flux-instance-values.yaml`)) {
-    await flux.installInstance(config, repoRoot);
+  if (existsSync(`${repoRoot}/flux-instance.yaml`)) {
+    await flux.installFluxOperatorAndInstance(config, repoRoot);
     await flux.waitForInstance();
     await flux.reconcile();
     fluxInstanceInstalled = true;
@@ -205,6 +209,36 @@ function resetLocalWorkflowFiles(repoRoot: string): void {
   if (!existsSync(wf)) return;
   execSafe("git checkout HEAD -- .github/workflows", { cwd: repoRoot });
   execSafe("git clean -fd -- .github/workflows", { cwd: repoRoot });
+}
+
+/** Default branch on GitHub for raw.githubusercontent.com links (template repo). */
+const TEMPLATE_DEFAULT_BRANCH = "main";
+
+/**
+ * Ensure `flux-instance.yaml` exists at the repo root so Flux bootstrap can run.
+ * When missing, downloads from the canonical template (same as a full template clone).
+ */
+async function ensureFluxInstanceYaml(repoRoot: string): Promise<void> {
+  const dest = `${repoRoot}/flux-instance.yaml`;
+  if (existsSync(dest)) return;
+
+  const rawUrl = `https://raw.githubusercontent.com/${SOURCE_PROJECT_PATH}/${TEMPLATE_DEFAULT_BRANCH}/flux-instance.yaml`;
+
+  try {
+    await withSpinner("Fetching flux-instance.yaml from template repository", async () => {
+      await execAsync(`curl -fsSL "${rawUrl}" -o "${dest}"`);
+    });
+    log.success("flux-instance.yaml added from GitOpsAI/gitops-ai-template");
+  } catch {
+    if (existsSync(dest)) {
+      rmSync(dest);
+    }
+    log.warn(
+      "Could not download flux-instance.yaml (network or firewall). " +
+        "Add flux-instance.yaml at the repo root manually, then re-run bootstrap. " +
+        "Skipping Flux installation for this run.",
+    );
+  }
 }
 
 async function cloneTemplate(repoRoot: string): Promise<void> {
@@ -314,7 +348,7 @@ async function setupSops(
   log.detail(`Age public key: ${pubKey}`);
   encryption.createSopsConfig(pubKey, sopsCfg);
 
-  if (k8s.isClusterReachable()) {
+  if (await k8s.isClusterReachable()) {
     await k8s.createSecretFromFile(
       sopsCfg.secretName,
       sopsCfg.namespace,

@@ -1,6 +1,6 @@
 {
   "name": "gitops-ai",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Flux GitOps infrastructure management CLI with interactive TUI",
   "keywords": [
     "gitops",
@@ -12,12 +12,7 @@
     "iac",
     "cli",
     "bootstrap",
-    "helm",
-    "kustomize",
-    "sops",
     "template-sync",
-    "gitlab",
-    "github",
     "devops",
     "platform-engineering",
     "cd",
@@ -27,7 +22,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/GitOpsAI/gitops-ai-bootstrapper.git"
+    "url": "git+https://github.com/GitOpsAI/gitops-ai-bootstrapper.git"
   },
   "homepage": "https://gitops-ai.vercel.app/",
   "author": "everythings-gonna-be-alright",
@@ -50,6 +45,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",
+    "@kubernetes/client-node": "^1.4.0",
     "commander": "^14.0.3",
     "picocolors": "^1.1.1",
     "zod": "^4.3.6"

@@ -153,6 +153,10 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
+      - name: Install kubectl (integration diagnostics and tests)
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.31.6"
       - name: Run integration tests
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -204,7 +208,7 @@ jobs:
           case "$SOURCE_BRANCH" in
             major|major/*|breaking|breaking/*) BUMP="major" ;;
             next|next/*|feature/*)             BUMP="minor" ;;
-            bugfix|bugfix/*|fix|fix/*|hotfix|hotfix/*) BUMP="patch" ;;
+            fix|fix/*|chore|chore/*)           BUMP="patch" ;;
             *)                                 BUMP="skip" ;;
           esac
 
