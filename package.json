@@ -27,9 +27,9 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://gitlab.com/everythings-gonna-be-alright/gitops_ai_bootstrapper.git"
+    "url": "https://github.com/GitOpsAI/gitops-ai-bootstrapper.git"
   },
-  "homepage": "https://gitlab.com/everythings-gonna-be-alright/gitops_ai_bootstrapper",
+  "homepage": "https://gitops-ai.vercel.app/",
   "author": "everythings-gonna-be-alright",
   "type": "module",
   "main": "dist/index.js",
