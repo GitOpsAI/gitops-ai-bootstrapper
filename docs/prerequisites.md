@@ -1,6 +1,6 @@
 # Prerequisites
 
-The bootstrap installs **git**, **flux-operator**, **sops**, **age**, and **k3d** (macOS / CI) or provisions **k3s** (Linux). The CLI talks to the Kubernetes API using **@kubernetes/client-node** (no `kubectl` binary required). **Flux** (operator + controllers) is installed into the cluster with **`flux-operator install`** during bootstrap. **Helm** is not required for that step; you may still use Helm charts inside your Flux repo via **helm-controller**. **kubectl** and **k9s** are optional for interactive debugging; the post-bootstrap summary may suggest installing them if they are not found.
+The bootstrap installs **git**, **flux-operator**, **sops**, **age**, **Docker Desktop** (macOS only, for k3d), and **k3d** (macOS / CI) or provisions **k3s** (Linux). The CLI talks to the Kubernetes API using **@kubernetes/client-node** (no `kubectl` binary required). **Flux** (operator + controllers) is installed into the cluster with **`flux-operator install`** during bootstrap. **Helm** is not required for that step; you may still use Helm charts inside your Flux repo via **helm-controller**. **kubectl** and **k9s** are optional for interactive debugging; the post-bootstrap summary may suggest installing them if they are not found.
 
 You should prepare the items below before running the wizard.
 
@@ -16,7 +16,7 @@ Required to run the CLI. Check with `node -v`.
 
 ### Docker runtime (macOS only)
 
-macOS uses [k3d](https://k3d.io/) to run Kubernetes inside Docker. A Docker-compatible runtime must be installed and running **before** bootstrap:
+macOS uses [k3d](https://k3d.io/) to run Kubernetes inside Docker. During `npx gitops-ai bootstrap`, the CLI installs Docker Desktop via Homebrew only if no Docker-compatible runtime is already present (Docker CLI, Docker Desktop, OrbStack, or Colima). It then starts Docker Desktop or OrbStack if needed and waits until the daemon responds to `docker info`. For a manual GUI install instead, see [Install Docker Desktop on Mac](https://docs.docker.com/desktop/setup/install/mac-install/).
 
 | Runtime                                                           | Install                               |
 |-------------------------------------------------------------------|---------------------------------------|

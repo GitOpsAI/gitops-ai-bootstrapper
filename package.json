@@ -1,6 +1,6 @@
 {
   "name": "gitops-ai",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Flux GitOps infrastructure management CLI with interactive TUI",
   "keywords": [
     "gitops",

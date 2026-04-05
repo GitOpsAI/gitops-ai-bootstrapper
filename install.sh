@@ -29,7 +29,7 @@ if ! command -v node &>/dev/null || [ "$(node -e 'process.stdout.write(String(pr
   if [[ "$OS" == "Darwin" ]]; then
     brew install node
   else
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    curl -fsSL https://deb.nodesource.com/setup_25.x | sudo -E bash -
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs > /dev/null
   fi
 fi
