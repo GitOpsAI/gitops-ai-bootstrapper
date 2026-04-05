@@ -74,11 +74,11 @@ Keeping the template in a separate repository means:
 
 The upstream template (and your bootstrapped repo) is organised roughly as:
 
-| Path                     | Role                                                                                                                                                                                        |
-|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Path                     | Role                                                                                                            |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------|
 | `templates/<category>/…` | Shared Helm bases and component manifests (e.g. `templates/system/`, `templates/ai/`, `templates/monitoring/`). |
-| `clusters/_template/`    | Prototype cluster layout; the CLI copies this to `clusters/<your-cluster-name>/` during bootstrap.            |
-| `clusters/<name>/`       | Your live cluster overlay (`cluster-sync.yaml`, `components/`, encrypted secrets).                                                                                                          |
+| `clusters/_template/`    | Prototype cluster layout; the CLI copies this to `clusters/<your-cluster-name>/` during bootstrap.              |
+| `clusters/<name>/`       | Your live cluster overlay (`cluster-sync.yaml`, `components/`, encrypted secrets).                              |
 
 See [Architecture](docs/architecture.md) for diagrams and a fuller tree.
 
