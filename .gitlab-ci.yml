@@ -11,7 +11,7 @@ stages:
 
 typecheck:
   stage: test
-  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
   before_script:
     - npm ci --ignore-scripts
   script:
@@ -22,7 +22,7 @@ typecheck:
 
 test-template-sync:
   stage: test
-  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
   variables:
     # Deterministic branch name in CI (avoids ambiguous remote HEAD / default-branch quirks)
     GIT_TEST_BRANCH: "ci-$CI_PIPELINE_ID"
@@ -44,7 +44,7 @@ test-template-sync:
 
 npm-audit:
   stage: security
-  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
   script:
     - npm ci --ignore-scripts
     - npm audit --omit=dev --audit-level=high
@@ -99,7 +99,7 @@ trivy-scan:
 
 integration-test:
   stage: integration
-  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
   services:
     - docker:27-dind
   variables:
@@ -176,7 +176,7 @@ create-tag:
 
 publish-npm:
   stage: publish
-  image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+  image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
   before_script:
     - echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
     - npm ci --ignore-scripts

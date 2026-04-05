@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
-      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+      image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
-      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+      image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
     env:
       GIT_TEST_BRANCH: ci-${{ github.run_id }}
     steps:
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     container:
-      image: node:22-alpine@sha256:4d64b49e6c891c8fc821007cb1cdc6c0db7773110ac2c34bf2e6960adef62ed3
+      image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -141,7 +141,7 @@ jobs:
     # Bootstrap git push + branch cleanup (GITHUB_TOKEN needs write to the repo).
     permissions:
       contents: write
-    # Run on the VM (not a container): actions/checkout in node:22-alpine often leaves a
+    # Run on the VM (not a container): actions/checkout in node:25-alpine often leaves a
     # tree without .git even if git is apk-installed first; the hosted runner has git + Docker.
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +149,7 @@ jobs:
         run: git rev-parse --is-inside-work-tree && git status -sb
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "25"
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts

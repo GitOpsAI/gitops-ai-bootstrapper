@@ -581,7 +581,7 @@ describe("Integration", { timeout: 1_800_000 }, () => {
       for (const r of helmReleasesSkipReadyInCi) {
         if (allRefs.some((x) => x.namespace === r.namespace && x.name === r.name)) {
           console.log(
-            `  skip ${r.namespace}/${r.name} (needs live provider credentials; not deleted — Flux re-applies from Git)`,
+            `  skip ${r.namespace}/${r.name} (needs live provider credentials)`,
           );
         }
       }
