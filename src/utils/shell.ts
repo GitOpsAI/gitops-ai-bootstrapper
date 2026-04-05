@@ -1,6 +1,7 @@
 import {
   execSync,
   exec as execCb,
+  spawn,
   spawnSync,
   type StdioOptions,
 } from "node:child_process";
@@ -81,6 +82,35 @@ export function execAsync(
         }
       },
     );
+  });
+}
+
+/**
+ * Run a shell command with stdio connected to the terminal so interactive prompts work
+ * (e.g. macOS administrator password for Homebrew cask installs).
+ */
+export function execShellInteractive(
+  command: string,
+  opts?: { cwd?: string },
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      shell: true,
+      stdio: "inherit",
+      cwd: opts?.cwd,
+      env: process.env,
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else {
+        const err = new Error(`Command failed with exit code ${code}`) as Error & {
+          exitCode: number;
+        };
+        err.exitCode = code ?? 1;
+        reject(err);
+      }
+    });
   });
 }
 

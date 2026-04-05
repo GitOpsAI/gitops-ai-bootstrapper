@@ -18,7 +18,7 @@ import {
 import { saveInstallPlan, loadInstallPlan, clearInstallPlan } from "../utils/config.js";
 import { execAsync, exec, execSafe, commandExists } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
-import { ensureAll } from "../core/dependencies.js";
+import { ensureAll, ensureDockerDaemonReady } from "../core/dependencies.js";
 import { runBootstrap, stripTemplateGitHubDirectory } from "../core/bootstrap-runner.js";
 import * as k8s from "../core/kubernetes.js";
 import * as k8sApi from "../core/k8s-api.js";
@@ -87,6 +87,8 @@ interface WizardState {
   openclawGatewayToken: string;
   ingressAllowedIps: string;
   clusterPublicIp: string;
+  /** When true, show Git branch + template tag prompts; otherwise use main/main defaults. */
+  enableAdditionalSettings: boolean;
 }
 
 function isNewRepo(state: WizardState): boolean {
@@ -134,9 +136,17 @@ async function enrichWithUser(
 // Wizard field definitions (Esc / Ctrl+C = go back one field)
 // ---------------------------------------------------------------------------
 
-function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<WizardState>[] {
+function buildFields(
+  detectedIp: string,
+  hasSavedPlan: boolean,
+  savedPlanRaw: Record<string, string> | null,
+): WizardField<WizardState>[] {
   const saved = (state: WizardState, key: keyof WizardState) =>
     hasSavedPlan && !!state[key];
+  const skipAdditionalSettingsToggle =
+    hasSavedPlan &&
+    savedPlanRaw != null &&
+    savedPlanRaw.enableAdditionalSettings !== undefined;
 
   return [
     // ── Setup Mode ──────────────────────────────────────────────────────
@@ -420,65 +430,6 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
         isNewRepo(state)
           ? ["Local path", `./${state.repoLocalPath}`]
           : ["Local repo path", resolve(state.repoLocalPath || ".")],
-    },
-    {
-      id: "repoBranch",
-      section: "Git Repository",
-      skip: (state) => saved(state, "repoBranch"),
-      run: async (state) => {
-        const v = await p.text({
-          message: pc.bold("Git branch for Flux"),
-          placeholder: "main",
-          defaultValue: state.repoBranch,
-        });
-        if (p.isCancel(v)) return back();
-        return { ...state, repoBranch: v as string };
-      },
-      review: (state) => ["Branch", state.repoBranch],
-    },
-    {
-      id: "templateTag",
-      section: "Git Repository",
-      hidden: (state) => !isNewRepo(state),
-      skip: (state) => saved(state, "templateTag"),
-      run: async (state) => {
-        const tags = await fetchTemplateTags();
-
-        if (tags.length > 0) {
-          const options: { value: string; label: string; hint?: string }[] = [
-            ...tags.map((tag, i) => ({
-              value: tag,
-              label: tag,
-              hint: i === 0 ? "latest" : undefined,
-            })),
-            {
-              value: "__manual__",
-              label: "Enter manually…",
-              hint: "type a tag or branch name",
-            },
-          ];
-
-          const v = await p.select({
-            message: pc.bold("Template version (tag) to clone"),
-            options,
-            initialValue: state.templateTag || tags[0],
-          });
-          if (p.isCancel(v)) return back();
-
-          if (v !== "__manual__") {
-            return { ...state, templateTag: v as string };
-          }
-        }
-
-        const v = await p.text({
-          message: pc.bold("Template tag or branch to clone"),
-          placeholder: "main",
-          defaultValue: state.templateTag || "main",
-        });
-        if (p.isCancel(v)) return back();
-        return { ...state, templateTag: v as string };
-      },
-      review: (state) => ["Template tag", state.templateTag],
     },
 
     // ── DNS & TLS ─────────────────────────────────────────────────────────
@@ -872,6 +823,90 @@ function buildFields(detectedIp: string, hasSavedPlan: boolean): WizardField<Wiz
       },
       review: (state) => ["Network", `${state.clusterPublicIp}  allowed: ${state.ingressAllowedIps}`],
     },
+
+    // ── Additional settings (last — rarely needed) ─────────────────────────
+    {
+      id: "enableAdditionalSettings",
+      section: "Additional settings",
+      skip: () => skipAdditionalSettingsToggle,
+      run: async (state) => {
+        const v = await p.confirm({
+          message:
+            pc.bold("Setup additional settings?") +
+            `\n${pc.dim("Regularly not needed")}`,
+          initialValue: state.enableAdditionalSettings,
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, enableAdditionalSettings: v as boolean };
+      },
+      review: (state) => [
+        "Customize branch & template",
+        state.enableAdditionalSettings
+          ? "Yes"
+          : "No — defaults (main / main)",
+      ],
+    },
+    {
+      id: "repoBranch",
+      section: "Additional settings",
+      hidden: (state) => !state.enableAdditionalSettings,
+      skip: (state) => saved(state, "repoBranch"),
+      run: async (state) => {
+        const v = await p.text({
+          message: pc.bold("Git branch for Flux"),
+          placeholder: "main",
+          defaultValue: state.repoBranch,
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, repoBranch: v as string };
+      },
+      review: (state) => ["Flux Git branch", state.repoBranch],
+    },
+    {
+      id: "templateTag",
+      section: "Additional settings",
+      hidden: (state) =>
+        !isNewRepo(state) || !state.enableAdditionalSettings,
+      skip: (state) => saved(state, "templateTag"),
+      run: async (state) => {
+        const tags = await fetchTemplateTags();
+
+        if (tags.length > 0) {
+          const options: { value: string; label: string; hint?: string }[] = [
+            ...tags.map((tag, i) => ({
+              value: tag,
+              label: tag,
+              hint: i === 0 ? "latest" : undefined,
+            })),
+            {
+              value: "__manual__",
+              label: "Enter manually…",
+              hint: "type a tag or branch name",
+            },
+          ];
+
+          const v = await p.select({
+            message: pc.bold("Template version (tag) to clone"),
+            options,
+            initialValue: state.templateTag || tags[0],
+          });
+          if (p.isCancel(v)) return back();
+
+          if (v !== "__manual__") {
+            return { ...state, templateTag: v as string };
+          }
+        }
+
+        const v = await p.text({
+          message: pc.bold("Template tag or branch to clone"),
+          placeholder: "main",
+          defaultValue: state.templateTag || "main",
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, templateTag: v as string };
+      },
+      review: (state) => ["Template tag", state.templateTag],
+    },
   ];
 }
 
@@ -1180,6 +1215,15 @@ export async function bootstrap(): Promise<void> {
         ...OPTIONAL_COMPONENTS.map((c) => c.id),
       ];
 
+  const enableAdditionalFromPlan =
+    prev.enableAdditionalSettings === "true" ||
+    (saved != null &&
+      prev.enableAdditionalSettings === undefined &&
+      ((prev.repoBranch != null && prev.repoBranch !== "" && prev.repoBranch !== "main") ||
+        (prev.templateTag != null &&
+          prev.templateTag !== "" &&
+          prev.templateTag !== "main")));
+
   const initialState: WizardState = {
     gitProvider: (prev.gitProvider as ProviderType) ?? "github",
     setupMode: (prev.setupMode as "new" | "existing") ?? "new",
@@ -1190,6 +1234,7 @@ export async function bootstrap(): Promise<void> {
     repoName: prev.repoName ?? "fluxcd_ai",
     repoLocalPath: prev.repoLocalPath ?? "",
     repoOwner: prev.repoOwner ?? "",
+    enableAdditionalSettings: enableAdditionalFromPlan,
     repoBranch: prev.repoBranch ?? "main",
     templateTag: prev.templateTag ?? "",
     letsencryptEmail: prev.letsencryptEmail ?? "",
@@ -1202,7 +1247,10 @@ export async function bootstrap(): Promise<void> {
     clusterPublicIp: prev.clusterPublicIp ?? detectedIp,
   };
 
-  const wizard = await stepWizard(buildFields(detectedIp, !!saved), initialState);
+  const wizard = await stepWizard(
+    buildFields(detectedIp, !!saved, saved),
+    initialState,
+  );
 
   // ── Save config ─────────────────────────────────────────────────────
   saveInstallPlan({
@@ -1219,6 +1267,7 @@ export async function bootstrap(): Promise<void> {
     repoName: wizard.repoName,
     repoLocalPath: wizard.repoLocalPath,
     repoOwner: wizard.repoOwner,
+    enableAdditionalSettings: String(wizard.enableAdditionalSettings),
     repoBranch: wizard.repoBranch,
     templateTag: wizard.templateTag,
     cloudflareApiToken: wizard.cloudflareApiToken,
@@ -1228,68 +1277,81 @@ export async function bootstrap(): Promise<void> {
   });
   log.success("Configuration saved");
 
-  // ── Warn about CLI tools that will be installed ─────────────────────
+  // ── CLI tools: explain + confirm + install only when something is missing ──
   const toolDescriptions: [string, string][] = [
     ["git",            "Version control (repo operations)"],
     ["flux-operator",  "FluxCD Operator CLI (installs Flux into the cluster)"],
     ["sops",           "Mozilla SOPS (secret encryption)"],
     ["age",            "Age encryption (SOPS key backend)"],
   ];
+  if (isMacOS()) {
+    toolDescriptions.push([
+      "docker",
+      "Docker-compatible runtime for k3d",
+    ]);
+  }
   if (isMacOS() || isCI()) {
     toolDescriptions.push(["k3d", "Lightweight K3s in Docker (local cluster)"]);
   }
 
-  const toBeInstalled = toolDescriptions
-    .filter(([name]) => !commandExists(name));
+  const missingToolNames = toolDescriptions
+    .filter(([name]) => !commandExists(name))
+    .map(([name]) => name);
 
-  const toolListFormatted = toolDescriptions
-    .map(([name, desc]) => {
-      const status = commandExists(name)
-        ? pc.green("installed")
-        : pc.yellow("will install");
-      return `  ${pc.bold(name.padEnd(16))} ${pc.dim(desc)}  [${status}]`;
-    })
-    .join("\n");
+  if (missingToolNames.length > 0) {
+    const toolListFormatted = toolDescriptions
+      .map(([name, desc]) => {
+        const status = commandExists(name)
+          ? pc.green("installed")
+          : pc.yellow("will install");
+        return `  ${pc.bold(name.padEnd(16))} ${pc.dim(desc)}  [${status}]`;
+      })
+      .join("\n");
 
-  const uninstallMac = toolDescriptions
-    .map(([name]) => name)
-    .join(" ");
+    const uninstallMacFormulae = toolDescriptions
+      .map(([name]) => name)
+      .filter((n) => n !== "docker")
+      .join(" ");
+    const uninstallMac =
+      isMacOS() && toolDescriptions.some(([n]) => n === "docker")
+        ? `brew uninstall ${uninstallMacFormulae} && brew uninstall --cask docker`
+        : `brew uninstall ${uninstallMacFormulae}`;
 
-  p.note(
-    `${pc.bold("The following CLI tools are required and will be installed if missing:")}\n\n` +
-    toolListFormatted +
-    "\n\n" +
-    pc.dim("─".repeat(60)) + "\n\n" +
-    pc.bold("Why are these needed?\n") +
-    pc.dim("These tools are used to create and manage your Kubernetes cluster,\n") +
-    pc.dim(`install Flux via flux-operator, encrypt secrets, and interact with ${providerLabel(wizard.gitProvider)}.\n`) +
-    pc.bold("How to uninstall later:\n") +
-    (isMacOS()
-      ? `  ${pc.cyan(`brew uninstall ${uninstallMac}`)}\n`
-      : `  ${pc.cyan("sudo rm -f /usr/local/bin/{flux-operator,sops,age,age-keygen}")}\n` +
-        `  ${pc.cyan(`sudo apt remove -y git`)}  ${pc.dim("(if installed via apt)")}\n`
-    ) +
-    pc.dim("\nAlready-installed tools will be skipped. No system tools will be modified."),
-    "Required CLI Tools",
-  );
+    p.note(
+      `${pc.bold("The following CLI tools are required and will be installed if missing:")}\n\n` +
+      toolListFormatted +
+      "\n\n" +
+      pc.dim("─".repeat(60)) + "\n\n" +
+      pc.bold("Why are these needed?\n") +
+      pc.dim("These tools are used to create and manage your Kubernetes cluster,\n") +
+      pc.dim(`install Flux via flux-operator, encrypt secrets, and interact with ${providerLabel(wizard.gitProvider)}.\n`) +
+      pc.bold("How to uninstall later:\n") +
+      (isMacOS()
+        ? `  ${pc.cyan(`brew uninstall ${uninstallMac}`)}\n`
+        : `  ${pc.cyan("sudo rm -f /usr/local/bin/{flux-operator,sops,age,age-keygen}")}\n` +
+          `  ${pc.cyan(`sudo apt remove -y git`)}  ${pc.dim("(if installed via apt)")}\n`
+      ) +
+      pc.dim("\nAlready-installed tools will be skipped. No system tools will be modified."),
+      "Required CLI Tools",
+    );
 
-  const confirmMsg = toBeInstalled.length > 0
-    ? `Install ${toBeInstalled.length} missing tool(s) and continue?`
-    : "All tools are already installed. Continue?";
-  const proceed = await p.confirm({
-    message: pc.bold(confirmMsg),
-    initialValue: true,
-  });
-  if (p.isCancel(proceed) || !proceed) {
-    log.error("Aborted.");
-    return process.exit(1) as never;
+    const proceed = await p.confirm({
+      message: pc.bold(
+        `Install ${missingToolNames.length} missing tool(s) and continue?`,
+      ),
+      initialValue: true,
+    });
+    if (p.isCancel(proceed) || !proceed) {
+      log.error("Aborted.");
+      return process.exit(1) as never;
+    }
+
+    log.step("Installing CLI tools");
+    await ensureAll(missingToolNames);
   }
 
-  // ── Install all CLI tools upfront ───────────────────────────────────
-  if (toBeInstalled.length > 0) {
-    log.step("Installing CLI tools");
-    const allToolNames = toolDescriptions.map(([name]) => name);
-    await ensureAll(allToolNames);
+  if (isMacOS()) {
+    await ensureDockerDaemonReady();
   }
 
   // ── Repo creation phase (new mode only) ─────────────────────────────
@@ -1334,17 +1396,9 @@ export async function bootstrap(): Promise<void> {
   };
 
   // ── Check macOS prerequisites ────────────────────────────────────────
-  if (isMacOS()) {
-    if (!commandExists("brew")) {
-      log.error("Homebrew is required on macOS. Install from https://brew.sh");
-      return process.exit(1) as never;
-    }
-    if (!commandExists("docker")) {
-      log.error(
-        "Docker is required on macOS (Docker Desktop, OrbStack, or Colima).",
-      );
-      return process.exit(1) as never;
-    }
+  if (isMacOS() && !commandExists("brew")) {
+    log.error("Homebrew is required on macOS. Install from https://brew.sh");
+    return process.exit(1) as never;
   }
 
   // ── Run bootstrap (cluster + flux + template + sops + git push) ─────

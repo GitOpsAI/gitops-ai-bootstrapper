@@ -2,6 +2,16 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.2.3
+
+### Added
+
+- **macOS container runtime** — the CLI will install Docker Desktop via Homebrew on MacOS when no compatible runtime is present (Docker, OrbStack, or Colima).
+
+### Changed
+
+- **Wizard** — optional Flux branch/template prompts live under **Additional settings** at the end (off by default); the CLI tools summary and installs run only when a tool is missing, with no extra noise for tools already present.
+
 ## 1.2.2
 
 ### Changed

@@ -16,47 +16,32 @@ GitOps-managed Kubernetes infrastructure for AI-powered applications powered by 
 
 ## Quick Start
 
-On your Mac or Linux machine:
+If you already have **Node.js** on your Mac or Linux machine:
 
 ```bash
 npx gitops-ai bootstrap
 ```
 
-Or SSH into your server (or run locally on macOS) and run:
+If Node is not installed yet, use the helper script — it installs Node when missing (on macOS, [Homebrew](https://brew.sh) is required for that step), then starts the wizard:
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/your-org/gitops-ai/main/install.sh | bash
-```
-
-Or, if you already have Node.js >= 18:
-
-```bash
-npx gitops-ai bootstrap
+curl -sfL https://raw.githubusercontent.com/GitOpsAI/gitops-ai-bootstrapper/refs/heads/main/install.sh | bash
 ```
 
 The interactive wizard will prompt for your Git provider (GitHub or GitLab), create or use a repository from the [GitOps AI Template](https://github.com/GitOpsAI/gitops-ai-template), and run the full bootstrap.
 
 ## Requirements
 
-| Resource    | Minimum                                       |
-|-------------|-----------------------------------------------|
-| **CPU**     | 2+ cores                                      |
-| **Memory**  | 4+ GB                                         |
-| **Disk**    | 20+ GB free                                   |
-| **OS**      | Ubuntu 25.04+ or macOS                        |
-| **Node.js** | 18+ (installed automatically by `install.sh`) |
+| Resource    | Minimum                                                  |
+|-------------|----------------------------------------------------------|
+| **CPU**     | 2+ cores                                                 |
+| **Memory**  | 4+ GB                                                    |
+| **Disk**    | 20+ GB free                                              |
+| **OS**      | Ubuntu 25.04+ or macOS                                   |
+| **Node.js** | 18+ (installed automatically by `install.sh`)            |
+| **Docker**  | macOS only — Docker Desktop; not used on Linux bootstrap |
 
 You will also need a [GitLab PAT](docs/prerequisites.md#1-gitlab-personal-access-token), a [Cloudflare API Token](docs/prerequisites.md#2-cloudflare-api-token) (if using automatic DNS/TLS), and an [OpenAI API Key](docs/prerequisites.md#3-openai-api-key) (if using OpenClaw). See [Prerequisites](docs/prerequisites.md) for full details.
-
-### Docker runtime (macOS only)
-
-macOS requires a Docker-compatible runtime for k3d. Install one of:
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [OrbStack](https://orbstack.dev/)
-- [Colima](https://github.com/abiosoft/colima)
-
-On Linux the bootstrap installs k3s directly -- no Docker required.
 
 ## Template Repository
 
