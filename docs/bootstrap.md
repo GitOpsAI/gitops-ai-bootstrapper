@@ -112,14 +112,12 @@ Once you confirm, the bootstrap proceeds through these automated phases:
 
 Installs missing CLI tools automatically:
 
-| Tool            | macOS    | Linux                    |
-|-----------------|----------|--------------------------|
-| `git`           | Homebrew | apt                      |
-| `kubectl`       | Homebrew | apt / curl               |
-| `helm`          | Homebrew | install script           |
-| `flux-operator` | Homebrew | curl                     |
-| `sops`, `age`   | Homebrew | apt / curl               |
-| `k3d`           | Homebrew | curl (macOS and CI only) |
+| Tool              | macOS    | Linux                    |
+|-------------------|----------|--------------------------|
+| `git`             | Homebrew | apt                      |
+| `flux-operator`   | Homebrew | curl                     |
+| `sops`, `age`     | Homebrew | apt / curl               |
+| `k3d`             | Homebrew | curl (macOS and CI only) |
 
 ### Phase 3: Kubernetes Cluster
 
@@ -128,14 +126,14 @@ Installs missing CLI tools automatically:
 
 Sets up kubeconfig and waits for the cluster to become ready.
 
-### Phase 4: Flux Operator
+### Phase 4: Flux prerequisites
 
-Installs the Flux Operator via its OCI Helm chart into the `flux-system` namespace.
+Creates the `flux-system` namespace and a Kubernetes secret so Flux can reach your Git repository:
 
-Git authentication for Flux depends on your provider and login method:
-
-- **GitHub + browser OAuth** -- creates an SSH deploy key on the repository and stores it as a Kubernetes secret. Deploy keys never expire.
+- **GitHub + browser OAuth** -- creates an SSH deploy key on the repository and stores it as a Kubernetes secret (`flux-system`). Deploy keys never expire.
 - **GitLab / manual PAT** -- stores the token as a Kubernetes secret so Flux can pull from your private repo.
+
+The Flux Operator and Flux controllers are installed **after** the first push to Git (see Phase 8), using `flux-operator install -f flux-instance.yaml` with a rendered `FluxInstance` manifest from your repo root.
 
 ### Phase 5: Cluster Template
 
@@ -156,9 +154,9 @@ Git authentication for Flux depends on your provider and login method:
 
 Commits all changes (cluster config + encrypted secrets) and pushes to your Git repository.
 
-### Phase 8: Flux Instance
+### Phase 8: Flux Operator and instance
 
-1. Installs a Flux Instance CR pointing to your repo and branch
+1. Runs **`flux-operator install -f flux-instance.yaml`** (installs the Flux Operator and applies the `FluxInstance` CR so controllers sync from your repo and branch)
 2. Waits for the instance to become ready
 3. Triggers an initial reconciliation
 
@@ -182,4 +180,4 @@ After bootstrap, if OpenClaw is installed, pair a device with:
 npx gitops-ai openclaw-pair
 ```
 
-This connects to the OpenClaw deployment via `kubectl exec`, lists pending device pairing requests, and lets you approve one by entering its request ID.
+This connects to the OpenClaw deployment (Kubernetes API exec into the pod), lists pending device pairing requests, and lets you approve one by entering its request ID.

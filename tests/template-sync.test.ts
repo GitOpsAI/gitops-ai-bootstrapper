@@ -144,7 +144,7 @@ describe("classifyFile", () => {
     ["templates/system/shared-helm-repos/kustomization.yaml", "routine"],
     ["templates/ai/openclaw/helm-release-openclaw.yaml", "routine"],
     [".sops.yaml", "high_touch"],
-    ["flux-instance-values.yaml", "high_touch"],
+    ["flux-instance.yaml", "high_touch"],
     ["secret-cloudflare.yaml", "high_touch"],
     ["clusters/homelab/cluster-sync.yaml", "high_touch"],
     ["clusters/homelab/kustomization.yaml", "cluster_overlay"],

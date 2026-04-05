@@ -33,7 +33,7 @@ graph LR
     FluxInst -->|"deploys"| Components
 ```
 
-1. **Template repository** ([`github.com/GitOpsAI/gitops-ai-template`](https://github.com/GitOpsAI/gitops-ai-template)) -- contains the default cluster layout, Helm values, and component manifests. You never modify this repo directly.
+1. **Template repository** ([`github.com/GitOpsAI/gitops-ai-template`](https://github.com/GitOpsAI/gitops-ai-template)) -- contains the default cluster layout, `flux-instance.yaml`, and component manifests. You never modify this repo directly.
 
 2. **Your GitOps repository** -- a fork/clone of the template, owned by your GitHub or GitLab namespace. This is the single source of truth for your cluster. All changes flow through Git. The repo includes `template-sync-metadata.yaml` (template semver and upstream coordinates); merging upstream updates is described in [Template synchronization](template-sync.md).
 
@@ -53,18 +53,17 @@ flowchart TD
     RepoSetup -->|Existing| UseExisting["Use existing repo"]
     Clone --> GitCreds["Configure git credentials"]
     UseExisting --> GitCreds
-    GitCreds --> Deps["Install dependencies<br/>(kubectl, helm, k9s, etc.)"]
+    GitCreds --> Deps["Install dependencies<br/>(git, flux-operator, sops, …)"]
     Deps --> K8s{"Platform?"}
     K8s -->|macOS / CI| K3d["Create k3d cluster"]
     K8s -->|Linux| K3s["Install k3s"]
-    K3d --> FluxOp["Install Flux Operator"]
-    K3s --> FluxOp
-    FluxOp --> GitSecret["Create GitLab auth secret"]
+    K3d --> GitSecret["Create flux-system +<br/>Git auth secret"]
+    K3s --> GitSecret
     GitSecret --> Template["Copy + render<br/>cluster template"]
     Template --> SOPS["SOPS: generate key +<br/>encrypt secrets"]
     SOPS --> Push["git commit + push"]
-    Push --> FluxInst["Install Flux Instance"]
-    FluxInst --> Reconcile["Trigger reconciliation"]
+    Push --> FluxInstall["flux-operator install -f<br/>(operator + FluxInstance)"]
+    FluxInstall --> Reconcile["Trigger reconciliation"]
     Reconcile --> Done["Bootstrap complete"]
 ```
 
@@ -78,7 +77,7 @@ After bootstrap, your GitOps repository looks like this (names may match your re
 your-gitops-repo/
 ├── .sops.yaml                          # SOPS encryption config (age public key)
 ├── template-sync-metadata.yaml         # Template version + upstream sync metadata
-├── flux-instance-values.yaml           # Flux Instance Helm values
+├── flux-instance.yaml                  # FluxInstance CR (used by flux-operator install)
 ├── templates/                          # Shared bases (by category — not a Flux cluster path)
 │   ├── system/                         # e.g. shared Helm repos, ingress
 │   ├── monitoring/                     # e.g. Grafana, VictoriaMetrics

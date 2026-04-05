@@ -21,6 +21,7 @@ import { isMacOS, isCI } from "../utils/platform.js";
 import { ensureAll } from "../core/dependencies.js";
 import { runBootstrap, stripTemplateGitHubDirectory } from "../core/bootstrap-runner.js";
 import * as k8s from "../core/kubernetes.js";
+import * as k8sApi from "../core/k8s-api.js";
 import * as flux from "../core/flux.js";
 import {
   getProvider,
@@ -1025,9 +1026,18 @@ export async function openclawPair(): Promise<void> {
 
   log.step("Listing pending device requests");
   try {
-    await execAsync(
-      "kubectl exec -n openclaw deployment/openclaw -c main -- node dist/index.js devices list",
+    const kc = k8sApi.kubeConfigFromDefault();
+    const code = await k8sApi.execInDeploymentContainerTty(
+      kc,
+      "openclaw",
+      "openclaw",
+      "main",
+      ["node", "dist/index.js", "devices", "list"],
     );
+    if (code !== 0) {
+      log.error("devices list failed");
+      return process.exit(1) as never;
+    }
   } catch {
     log.error("Failed to list device requests");
     return process.exit(1) as never;
@@ -1042,9 +1052,18 @@ export async function openclawPair(): Promise<void> {
   if (p.isCancel(requestId)) handleCancel();
 
   log.step(`Approving device ${requestId}`);
-  await execAsync(
-    `kubectl exec -n openclaw deployment/openclaw -c main -- node dist/index.js devices approve "${requestId}"`,
+  const kcApprove = k8sApi.kubeConfigFromDefault();
+  const approve = await k8sApi.execInDeploymentContainer(
+    kcApprove,
+    "openclaw",
+    "openclaw",
+    "main",
+    ["node", "dist/index.js", "devices", "approve", requestId as string],
   );
+  if (approve.exitCode !== 0) {
+    log.error(approve.stderr || "approve failed");
+    return process.exit(1) as never;
+  }
   log.success("Device paired successfully");
 }
 
@@ -1067,17 +1086,17 @@ export async function bootstrap(): Promise<void> {
   const version = readPackageVersion();
 
   const logo = [
-    "  ▄█████▄ ",
-    "  ██ ◆ ██ ",
-    "  ██   ██ ",
-    "  ▀██ ██▀ ",
-    "    ▀█▀   ",
+    " ▄█████▄ ",
+    " ██ ◆ ██ ",
+    " ██   ██ ",
+    " ▀██ ██▀ ",
+    "   ▀█▀   ",
   ];
   const taglines = [
     "💅 Secure, isolated & flexible GitOps infrastructure",
     "🤖 Manage it yourself — or delegate to AI",
-    "🔐 Encrypted secrets, hardened containers,",
-    "   continuous delivery",
+    "🔐 Encrypted secrets, hardened containers, continuous delivery",
+    "",
     pc.dim(`v${version}`),
   ];
   const banner = logo
@@ -1087,7 +1106,8 @@ export async function bootstrap(): Promise<void> {
   p.box(banner, pc.bold("Welcome to GitOps AI Bootstrapper"), {
     contentAlign: "left",
     titleAlign: "center",
-    rounded: true,
+    width: "auto",
+    rounded: false,
     formatBorder: (text) => pc.cyan(text),
   });
 
@@ -1211,9 +1231,7 @@ export async function bootstrap(): Promise<void> {
   // ── Warn about CLI tools that will be installed ─────────────────────
   const toolDescriptions: [string, string][] = [
     ["git",            "Version control (repo operations)"],
-    ["kubectl",        "Kubernetes CLI (cluster management)"],
-    ["helm",           "Kubernetes package manager (chart installs)"],
-    ["flux-operator",  "FluxCD Operator CLI (GitOps reconciliation)"],
+    ["flux-operator",  "FluxCD Operator CLI (installs Flux into the cluster)"],
     ["sops",           "Mozilla SOPS (secret encryption)"],
     ["age",            "Age encryption (SOPS key backend)"],
   ];
@@ -1244,11 +1262,11 @@ export async function bootstrap(): Promise<void> {
     pc.dim("─".repeat(60)) + "\n\n" +
     pc.bold("Why are these needed?\n") +
     pc.dim("These tools are used to create and manage your Kubernetes cluster,\n") +
-    pc.dim(`deploy components via Helm/Flux, encrypt secrets, and interact with ${providerLabel(wizard.gitProvider)}.\n\n`) +
+    pc.dim(`install Flux via flux-operator, encrypt secrets, and interact with ${providerLabel(wizard.gitProvider)}.\n`) +
     pc.bold("How to uninstall later:\n") +
     (isMacOS()
       ? `  ${pc.cyan(`brew uninstall ${uninstallMac}`)}\n`
-      : `  ${pc.cyan("sudo rm -f /usr/local/bin/{kubectl,helm,flux-operator,sops,age,age-keygen}")}\n` +
+      : `  ${pc.cyan("sudo rm -f /usr/local/bin/{flux-operator,sops,age,age-keygen}")}\n` +
         `  ${pc.cyan(`sudo apt remove -y git`)}  ${pc.dim("(if installed via apt)")}\n`
     ) +
     pc.dim("\nAlready-installed tools will be skipped. No system tools will be modified."),
@@ -1394,8 +1412,20 @@ export async function bootstrap(): Promise<void> {
 
   const finalSteps = [
     `All HelmReleases may take ${pc.yellow("~5 minutes")} to become ready.`,
-    `Check status: ${pc.cyan("kubectl get helmreleases -A")}`,
   ];
+  if (commandExists("kubectl")) {
+    finalSteps.push(
+      `Check HelmRelease status: ${pc.cyan("kubectl get helmreleases -A")}`,
+    );
+  } else {
+    finalSteps.push(
+      `Install ${pc.bold("kubectl")} to check HelmRelease status: ${
+        isMacOS()
+          ? pc.cyan("brew install kubectl")
+          : pc.cyan("https://kubernetes.io/docs/tasks/tools/")
+      }`,
+    );
+  }
   if (!commandExists("k9s")) {
     finalSteps.push(
       `Install ${pc.bold("k9s")} for a terminal UI to monitor your cluster: ${

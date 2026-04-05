@@ -162,7 +162,7 @@ export interface UpstreamDiffResult {
 }
 
 const HIGH_TOUCH_PATTERNS = [
-  /^flux-instance-values\.yaml$/,
+  /^flux-instance\.yaml$/,
   /^\.sops\.yaml$/,
   /secret-.*\.yaml$/,
   /cluster-sync\.yaml$/,

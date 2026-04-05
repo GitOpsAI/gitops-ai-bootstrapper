@@ -15,47 +15,6 @@ async function runInstall(cmd: string): Promise<void> {
 
 const registry: Dependency[] = [
   {
-    name: "kubectl",
-    check: () => commandExists("kubectl"),
-    installDarwin: () => runInstall("brew install kubectl"),
-    installLinux: async () => {
-      const arch = getArch();
-      const version = await execAsync(
-        "curl -sL https://dl.k8s.io/release/stable.txt",
-      );
-      await execAsync(
-        `curl -sL "https://dl.k8s.io/release/${version}/bin/linux/${arch}/kubectl" -o /tmp/kubectl`,
-      );
-      await execAsync(
-        "sudo install -o root -g root -m 0755 /tmp/kubectl /usr/local/bin/kubectl",
-      );
-      await execAsync("rm -f /tmp/kubectl");
-    },
-  },
-  {
-    name: "helm",
-    check: () => commandExists("helm"),
-    installDarwin: () => runInstall("brew install helm"),
-    installLinux: () =>
-      runInstall(
-        "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
-      ),
-  },
-  {
-    name: "k9s",
-    check: () => commandExists("k9s"),
-    installDarwin: () => runInstall("brew install derailed/k9s/k9s"),
-    installLinux: async () => {
-      await execAsync(
-        "wget -qO /tmp/k9s_linux_amd64.deb https://github.com/derailed/k9s/releases/latest/download/k9s_linux_amd64.deb",
-      );
-      await execAsync(
-        "sudo DEBIAN_FRONTEND=noninteractive apt install -y /tmp/k9s_linux_amd64.deb",
-      );
-      await execAsync("rm /tmp/k9s_linux_amd64.deb");
-    },
-  },
-  {
     name: "flux-operator",
     check: () => commandExists("flux-operator"),
     installDarwin: () =>

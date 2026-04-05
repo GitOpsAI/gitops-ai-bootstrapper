@@ -109,6 +109,7 @@ integration-test:
     DOCKER_TLS_VERIFY: "1"
   before_script:
     - apk add --no-cache docker-cli git curl openssl bash sudo
+    - KUBEVER=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBEVER}/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl
     - npm ci --ignore-scripts
   script:
     - npx tsx --test tests/integration.test.ts

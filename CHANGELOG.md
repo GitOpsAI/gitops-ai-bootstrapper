@@ -2,6 +2,12 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.2.2
+
+### Changed
+
+- **Removed `helm` and `kubectl` as dependencies** — bootstrap and cluster checks use `@kubernetes/client-node` instead of requiring those binaries on the host.
+
 ## 1.2.1
 
 ### Changed

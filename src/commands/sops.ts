@@ -10,7 +10,6 @@ import {
   handleCancel,
   withSpinner,
 } from "../utils/log.js";
-import { commandExists } from "../utils/shell.js";
 import { ensureAll } from "../core/dependencies.js";
 import * as k8s from "../core/kubernetes.js";
 import * as enc from "../core/encryption.js";
@@ -23,9 +22,6 @@ function resolveRepoRoot(): string {
 
 async function ensurePrerequisites(): Promise<void> {
   await ensureAll(["sops", "age"]);
-  if (!commandExists("kubectl")) {
-    throw new Error("kubectl is required but not installed.");
-  }
 }
 
 function ensureAgeKey(cfg: SopsConfig): void {
@@ -66,8 +62,8 @@ async function cmdInit(repoRoot: string, cfg: SopsConfig): Promise<void> {
   const pubKey = enc.getAgePublicKey(cfg);
   enc.createSopsConfig(pubKey, cfg);
 
-  if (k8s.isClusterReachable()) {
-    if (k8s.secretExists(cfg.secretName, cfg.namespace)) {
+  if (await k8s.isClusterReachable()) {
+    if (await k8s.secretExists(cfg.secretName, cfg.namespace)) {
       log.warn(`Secret ${cfg.namespace}/${cfg.secretName} already exists`);
       const overwrite = await p.confirm({
         message: "Overwrite?",
@@ -222,7 +218,7 @@ async function cmdImport(cfg: SopsConfig): Promise<void> {
 
   await ensurePrerequisites();
 
-  if (k8s.secretExists(cfg.secretName, cfg.namespace)) {
+  if (await k8s.secretExists(cfg.secretName, cfg.namespace)) {
     const overwrite = await p.confirm({
       message: `Secret ${cfg.namespace}/${cfg.secretName} exists. Overwrite?`,
       initialValue: false,
@@ -278,8 +274,8 @@ async function cmdRotate(repoRoot: string, cfg: SopsConfig): Promise<void> {
     await enc.encryptFile(file, cfg, repoRoot);
   }
 
-  if (k8s.isClusterReachable()) {
-    if (k8s.secretExists(cfg.secretName, cfg.namespace)) {
+  if (await k8s.isClusterReachable()) {
+    if (await k8s.secretExists(cfg.secretName, cfg.namespace)) {
       await k8s.deleteSecret(cfg.secretName, cfg.namespace);
     }
     await k8s.createSecretFromFile(

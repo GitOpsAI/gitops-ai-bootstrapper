@@ -35,7 +35,7 @@ The wizard:
 2. Fetches available tags from upstream and lets you pick one (or type a custom ref).
 3. Fetches the ref and shows a **diff summary** with risk classification:
    - **Routine** — `templates/` changes (chart bumps, shared Helm bases, namespace tweaks).
-   - **High-touch** — `flux-instance-values.yaml`, `.sops.yaml`, `secret-*.yaml`, `cluster-sync.yaml`.
+   - **High-touch** — `flux-instance.yaml`, `.sops.yaml`, `secret-*.yaml`, `cluster-sync.yaml`.
    - **Cluster overlay** — anything under `clusters/`.
 4. Prompts: **Merge now**, **Dry-run only**, or **Cancel**.
 5. After merge: shows a summary with files changed, conflict count (if any), and next steps.
@@ -89,7 +89,7 @@ See the template [GitHub Actions workflow](https://github.com/GitOpsAI/gitops-ai
 If you use GitLab and copy the template’s CI, merge requests may print **classification** lines:
 
 - **ROUTINE_SYNC_CANDIDATE** — `templates/` changed.
-- **HIGH_TOUCH_REVIEW** — `flux-instance-values.yaml`, `.sops.yaml`, `secret-*.yaml`, or `cluster-sync.yaml`.
+- **HIGH_TOUCH_REVIEW** — `flux-instance.yaml`, `.sops.yaml`, `secret-*.yaml`, or `cluster-sync.yaml`.
 - **CLUSTER_OVERLAY** — anything under `clusters/`.
 
 Use these as hints for reviewer assignment — they do not replace human judgment.

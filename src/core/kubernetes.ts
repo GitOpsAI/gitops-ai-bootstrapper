@@ -1,13 +1,14 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
 import { KUBERNETES_VERSION } from "../schemas.js";
+import * as k8sApi from "./k8s-api.js";
 
-export function isClusterReachable(): boolean {
-  const { exitCode } = execSafe("kubectl cluster-info 2>/dev/null");
-  return exitCode === 0;
+export async function isClusterReachable(): Promise<boolean> {
+  return k8sApi.isClusterReachableApi(k8sApi.kubeConfigFromDefault());
 }
 
 export interface ExistingCluster {
@@ -30,7 +31,9 @@ export function detectExistingClusters(): ExistingCluster | null {
 }
 
 export function listK3dClusters(): string[] {
-  const { stdout, exitCode } = execSafe("k3d cluster list --no-headers 2>/dev/null");
+  const { stdout, exitCode } = execSafe(
+    "k3d cluster list --no-headers 2>/dev/null",
+  );
   if (exitCode !== 0 || !stdout.trim()) return [];
   return stdout
     .trim()
@@ -106,16 +109,13 @@ export function setupKubeconfig(clusterName: string): string {
 export async function waitForCluster(): Promise<void> {
   await withSpinner("Waiting for cluster to be ready", async () => {
     await new Promise((r) => setTimeout(r, 5000));
-    await execAsync(
-      "kubectl wait --for=condition=Ready node --all --timeout=120s",
-    );
+    const kc = k8sApi.kubeConfigFromDefault();
+    await k8sApi.waitForAllNodesReady(kc, 120_000);
   });
 }
 
 export async function createNamespace(name: string): Promise<void> {
-  await execAsync(
-    `kubectl create namespace ${name} --dry-run=client -o yaml | kubectl apply -f -`,
-  );
+  await k8sApi.createNamespaceApi(k8sApi.kubeConfigFromDefault(), name);
 }
 
 export async function createSecret(
@@ -123,41 +123,35 @@ export async function createSecret(
   namespace: string,
   data: Record<string, string>,
 ): Promise<void> {
-  // Avoid shell: tokens must not pass through sh quoting (Flux Git auth failures).
-  const args = [
-    "create",
-    "secret",
-    "generic",
+  log.detail(`create secret ${name} --namespace=${namespace}`);
+  await k8sApi.createSecretLiteralsApi(
+    k8sApi.kubeConfigFromDefault(),
     name,
-    `--namespace=${namespace}`,
-    ...Object.entries(data).flatMap(([k, v]) => ["--from-literal", `${k}=${v}`]),
-  ];
-  log.detail(`kubectl create secret generic ${name} --namespace=${namespace}`);
-  const r = spawnSync("kubectl", args, {
-    encoding: "utf-8",
-    maxBuffer: 10 * 1024 * 1024,
-  });
-  if (r.error) throw r.error;
-  if (r.status !== 0) {
-    throw new Error(
-      r.stderr?.trim() ||
-        `kubectl create secret failed (exit ${r.status ?? 1})`,
-    );
-  }
+    namespace,
+    data,
+  );
 }
 
-export function secretExists(name: string, namespace: string): boolean {
-  const { exitCode } = execSafe(
-    `kubectl get secret ${name} -n ${namespace} 2>/dev/null`,
+export async function secretExists(
+  name: string,
+  namespace: string,
+): Promise<boolean> {
+  return k8sApi.secretExistsApi(
+    k8sApi.kubeConfigFromDefault(),
+    name,
+    namespace,
   );
-  return exitCode === 0;
 }
 
 export async function deleteSecret(
   name: string,
   namespace: string,
 ): Promise<void> {
-  await execAsync(`kubectl delete secret ${name} -n ${namespace}`);
+  await k8sApi.deleteSecretApi(
+    k8sApi.kubeConfigFromDefault(),
+    name,
+    namespace,
+  );
 }
 
 export async function createSecretFromFile(
@@ -166,9 +160,15 @@ export async function createSecretFromFile(
   key: string,
   filePath: string,
 ): Promise<void> {
-  const cmd = `kubectl create secret generic ${name} --namespace=${namespace} --from-file=${key}="${filePath}"`;
-  log.detail(`kubectl create secret generic ${name} --namespace=${namespace} --from-file=${key}`);
-  await execAsync(cmd);
+  log.detail(
+    `create secret generic ${name} --namespace=${namespace} --from-file=${key}`,
+  );
+  await k8sApi.createSecretFromFilesApi(
+    k8sApi.kubeConfigFromDefault(),
+    name,
+    namespace,
+    { [key]: filePath },
+  );
 }
 
 export async function createSshSecret(
@@ -178,23 +178,25 @@ export async function createSshSecret(
   publicKey: string,
   knownHosts: string,
 ): Promise<void> {
-  const tmpDir = "/tmp/flux-ssh-secret";
-  mkdirSync(tmpDir, { recursive: true });
-
+  const tmpDir = mkdtempSync(join(tmpdir(), "flux-ssh-"));
   try {
-    writeFileSync(`${tmpDir}/identity`, privateKey, { mode: 0o600 });
-    writeFileSync(`${tmpDir}/identity.pub`, publicKey);
-    writeFileSync(`${tmpDir}/known_hosts`, knownHosts);
-
-    const cmd = [
-      `kubectl create secret generic ${name}`,
-      `--namespace=${namespace}`,
-      `--from-file=identity="${tmpDir}/identity"`,
-      `--from-file=identity.pub="${tmpDir}/identity.pub"`,
-      `--from-file=known_hosts="${tmpDir}/known_hosts"`,
-    ].join(" ");
-    log.detail(`kubectl create secret generic ${name} --namespace=${namespace} (SSH)`);
-    await execAsync(cmd);
+    const identity = join(tmpDir, "identity");
+    const identityPub = join(tmpDir, "identity.pub");
+    const knownHostsPath = join(tmpDir, "known_hosts");
+    writeFileSync(identity, privateKey, { mode: 0o600 });
+    writeFileSync(identityPub, publicKey);
+    writeFileSync(knownHostsPath, knownHosts);
+    log.detail(`create secret generic ${name} --namespace=${namespace} (SSH)`);
+    await k8sApi.createSecretFromFilesApi(
+      k8sApi.kubeConfigFromDefault(),
+      name,
+      namespace,
+      {
+        identity,
+        "identity.pub": identityPub,
+        known_hosts: knownHostsPath,
+      },
+    );
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }

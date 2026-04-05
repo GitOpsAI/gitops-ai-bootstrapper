@@ -19,11 +19,49 @@ export function header(title: string, subtitle?: string): void {
   }
 }
 
+/** Max characters per line for values before wrapping (tokens, long URLs). */
+const SUMMARY_VALUE_WRAP = 56;
+
+function formatSummaryLines(entries: Record<string, string>): string {
+  const list = Object.entries(entries);
+  if (list.length === 0) return "";
+
+  const labelWithColon = (k: string) => `${k}:`;
+  const labelWidth = Math.max(
+    ...list.map(([k]) => labelWithColon(k).length),
+    0,
+  );
+  const gap = 2;
+  const indent = " ".repeat(labelWidth + gap);
+
+  const out: string[] = [];
+  for (const [key, raw] of list) {
+    const label = labelWithColon(key).padEnd(labelWidth + gap);
+    const value = raw ?? "";
+
+    if (value.length === 0 || value.length <= SUMMARY_VALUE_WRAP) {
+      out.push(`${pc.bold(label)}${pc.cyan(value)}`);
+      continue;
+    }
+
+    let pos = 0;
+    let first = true;
+    while (pos < value.length) {
+      const chunk = value.slice(pos, pos + SUMMARY_VALUE_WRAP);
+      pos += SUMMARY_VALUE_WRAP;
+      if (first) {
+        out.push(`${pc.bold(label)}${pc.cyan(chunk)}`);
+        first = false;
+      } else {
+        out.push(`${indent}${pc.cyan(chunk)}`);
+      }
+    }
+  }
+  return out.join("\n");
+}
+
 export function summary(title: string, entries: Record<string, string>): void {
-  const lines = Object.entries(entries)
-    .map(([key, value]) => `${pc.bold(key + ":")}  ${pc.cyan(value)}`)
-    .join("\n");
-  p.note(lines, title);
+  p.note(formatSummaryLines(entries), title);
 }
 
 export function nextSteps(steps: string[]): void {

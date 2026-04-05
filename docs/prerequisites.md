@@ -1,6 +1,6 @@
 # Prerequisites
 
-The bootstrap installs **git**, **kubectl**, **helm**, **sops**, **age**, and **k3d** (macOS / CI) or provisions **k3s** (Linux). The **Flux Operator** is installed into the cluster during bootstrap. **k9s** is optional; the post-bootstrap summary may suggest installing it if it is not found.
+The bootstrap installs **git**, **flux-operator**, **sops**, **age**, and **k3d** (macOS / CI) or provisions **k3s** (Linux). The CLI talks to the Kubernetes API using **@kubernetes/client-node** (no `kubectl` binary required). **Flux** (operator + controllers) is installed into the cluster with **`flux-operator install`** during bootstrap. **Helm** is not required for that step; you may still use Helm charts inside your Flux repo via **helm-controller**. **kubectl** and **k9s** are optional for interactive debugging; the post-bootstrap summary may suggest installing them if they are not found.
 
 You should prepare the items below before running the wizard.
 
