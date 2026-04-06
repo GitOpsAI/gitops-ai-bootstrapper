@@ -107,6 +107,18 @@ function componentLabel(id: string): string {
   return COMPONENTS.find((c) => c.id === id)?.label ?? id;
 }
 
+/**
+ * Insert cert-manager + external-dns after required components when DNS/TLS is enabled.
+ * Optional components are chosen before the DNS/TLS question; this applies that toggle.
+ */
+function applyDnsTlsComponents(components: string[], enable: boolean): string[] {
+  const without = components.filter((id) => !DNS_TLS_COMPONENT_IDS.includes(id));
+  if (!enable) return without;
+  const required = REQUIRED_COMPONENT_IDS.filter((id) => without.includes(id));
+  const rest = without.filter((id) => !REQUIRED_COMPONENT_IDS.includes(id));
+  return [...required, ...DNS_TLS_COMPONENT_IDS, ...rest];
+}
+
 // fetchTemplateTags is imported from core/template-sync.ts
 
 function providerLabel(type: ProviderType): string {
@@ -432,30 +444,24 @@ function buildFields(
           : ["Local repo path", resolve(state.repoLocalPath || ".")],
     },
 
-    // ── DNS & TLS ─────────────────────────────────────────────────────────
+    // ── Cluster name, then optional components, then DNS/TLS toggle ───
     {
-      id: "manageDnsAndTls",
-      section: "DNS & TLS",
-      skip: (state) => saved(state, "manageDnsAndTls"),
+      id: "clusterName",
+      section: "Cluster",
+      skip: (state) => saved(state, "clusterName"),
       run: async (state) => {
-        const v = await p.confirm({
-          message:
-            pc.bold("Do you want to manage DNS and TLS (HTTPS) certificates automatically?") +
-            `\n${pc.dim("Existing DNS domain on Cloudflare required")}`,
-          initialValue: state.manageDnsAndTls,
+        const v = await p.text({
+          message: pc.bold("Kubernetes cluster name"),
+          placeholder: "homelab",
+          defaultValue: state.clusterName,
         });
         if (p.isCancel(v)) return back();
-        return { ...state, manageDnsAndTls: v as boolean };
+        return { ...state, clusterName: v as string };
       },
-      review: (state) => [
-        "Auto DNS & TLS",
-        state.manageDnsAndTls
-          ? "Yes — Cert Manager + External DNS (Cloudflare)"
-          : "No — manual DNS & certificates",
-      ],
+      review: (state) => ["Name", state.clusterName],
     },
 
-    // ── Components ───────────────────────────────────────────────────────
+    // ── Components (before DNS/TLS — cert-manager/external-dns added when DNS/TLS is enabled)
     {
       id: "selectedComponents",
       section: "Components",
@@ -497,16 +503,20 @@ function buildFields(
         const picks = selected as string[];
         const monitoringIds = picks.includes(MONITORING_GROUP_ID) ? MONITORING_COMPONENT_IDS : [];
         const otherIds = picks.filter((id) => id !== MONITORING_GROUP_ID);
-        const dnsTlsIds = state.manageDnsAndTls ? DNS_TLS_COMPONENT_IDS : [];
+
+        const core = [
+          ...REQUIRED_COMPONENT_IDS,
+          ...monitoringIds,
+          ...otherIds,
+        ];
+        // DNS/TLS components are added in the next step unless that step is skipped (saved plan).
+        const selectedComponents = saved(state, "manageDnsAndTls")
+          ? applyDnsTlsComponents(core, state.manageDnsAndTls)
+          : core;
 
         return {
           ...state,
-          selectedComponents: [
-            ...REQUIRED_COMPONENT_IDS,
-            ...dnsTlsIds,
-            ...monitoringIds,
-            ...otherIds,
-          ],
+          selectedComponents,
         };
       },
       review: (state) => [
@@ -515,22 +525,37 @@ function buildFields(
       ],
     },
 
-    // ── Cluster ──────────────────────────────────────────────────────────
+    // ── DNS & TLS ─────────────────────────────────────────────────────────
     {
-      id: "clusterName",
-      section: "Cluster",
-      skip: (state) => saved(state, "clusterName"),
+      id: "manageDnsAndTls",
+      section: "DNS & TLS",
+      skip: (state) => saved(state, "manageDnsAndTls"),
       run: async (state) => {
-        const v = await p.text({
-          message: pc.bold("Kubernetes cluster name"),
-          placeholder: "homelab",
-          defaultValue: state.clusterName,
+        const v = await p.confirm({
+          message:
+            pc.bold("Do you want to manage DNS and TLS (HTTPS) certificates automatically?") +
+            `\n${pc.dim("Existing DNS domain on Cloudflare required")}`,
+          initialValue: state.manageDnsAndTls,
         });
         if (p.isCancel(v)) return back();
-        return { ...state, clusterName: v as string };
+        const manageDnsAndTls = v as boolean;
+        return {
+          ...state,
+          manageDnsAndTls,
+          selectedComponents: applyDnsTlsComponents(
+            state.selectedComponents,
+            manageDnsAndTls,
+          ),
+        };
       },
-      review: (state) => ["Name", state.clusterName],
+      review: (state) => [
+        "Auto DNS & TLS",
+        state.manageDnsAndTls
+          ? "Yes — Cert Manager + External DNS (Cloudflare)"
+          : "No — manual DNS & certificates",
+      ],
     },
+
     {
       id: "clusterDomain",
       section: "Cluster",
@@ -591,7 +616,7 @@ function buildFields(
             {
               value: "browser",
               label: "Open dashboard (recommended)",
-              hint: "pre-filled Edit zone DNS token — works over SSH / remote",
+              hint: "pre-filled Edit zone DNS token",
             },
             {
               value: "pat",
@@ -668,8 +693,16 @@ function buildFields(
               pc.dim("The key starts with sk-… and is only shown once."),
             "OpenAI API Key",
           );
+          p.log.info(
+            pc.dim(
+              "This tool will try to open your default browser to the OpenAI API keys page.",
+            ),
+          );
           await p.text({
-            message: pc.dim("Press ") + pc.bold(pc.yellow("Enter")) + pc.dim(" to open browser…"),
+            message:
+              pc.dim("Press ") +
+              pc.bold(pc.yellow("Enter")) +
+              pc.dim(" to try opening your default browser…"),
             defaultValue: "",
           });
           openUrl(OPENAI_API_KEYS_URL);

@@ -160,11 +160,16 @@ export async function loginWithGitHubDevice(host: string): Promise<string> {
     `Enter code ${pc.bold(pc.cyan(dc.user_code))} at ${pc.cyan(dc.verification_uri)}`,
   );
   p.log.info(
-    pc.dim("If the browser doesn't open, visit the URL above manually."),
+    pc.dim(
+      "If your default browser does not open automatically, visit the URL above and enter the code manually.",
+    ),
   );
 
   await p.text({
-    message: pc.dim("Press ") + pc.bold(pc.yellow("Enter")) + pc.dim(" to open browser…"),
+    message:
+      pc.dim("Press ") +
+      pc.bold(pc.yellow("Enter")) +
+      pc.dim(" to try opening your default browser…"),
     defaultValue: "",
   });
   openUrl(dc.verification_uri);

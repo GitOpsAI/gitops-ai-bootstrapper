@@ -64,6 +64,14 @@ async function promptForDashboardToken(clusterDomain: string): Promise<string> {
       pc.dim("Continue to summary → Create Token → copy the value."),
     "Cloudflare API Token",
   );
+
+  await p.text({
+    message:
+      pc.dim("Press ") +
+      pc.bold(pc.yellow("Enter")) +
+      pc.dim(" to try opening your default browser…"),
+    defaultValue: "",
+  });
   openUrl(url);
 
   const token = await p.password({
