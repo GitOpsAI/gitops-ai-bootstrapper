@@ -1504,7 +1504,7 @@ export async function bootstrap(): Promise<void> {
   if (isOpenclawEnabled) {
     finalSteps.push(
       `Open OpenClaw at ${pc.cyan(`https://openclaw.${fullConfig.clusterDomain}`)}`,
-      `Pair a device: ${pc.cyan("npx fluxcd-ai-bootstraper openclaw-pair")}`,
+      `Pair a device: ${pc.cyan("npx gitops-ai openclaw-pair")}`,
     );
   }
   finalSteps.push(
