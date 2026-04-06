@@ -590,13 +590,13 @@ function buildFields(
           options: [
             {
               value: "browser",
-              label: "Login with browser",
-              hint: "OAuth login → auto-creates a scoped DNS token — recommended",
+              label: "Open dashboard (recommended)",
+              hint: "pre-filled Edit zone DNS token — works over SSH / remote",
             },
             {
               value: "pat",
               label: "Paste an API Token",
-              hint: "manual token from dash.cloudflare.com",
+              hint: "you already have a token",
             },
           ],
         });
@@ -607,8 +607,8 @@ function buildFields(
             const token = await loginAndCreateCloudflareToken(state.clusterDomain);
             return { ...state, cloudflareApiToken: token };
           } catch (err) {
-            log.warn(`Browser login failed: ${(err as Error).message}`);
-            log.warn("Falling back to manual token entry");
+            log.warn(`Cloudflare token step failed: ${(err as Error).message}`);
+            log.warn("Paste an API token manually below, or restart and choose that option.");
           }
         }
 
