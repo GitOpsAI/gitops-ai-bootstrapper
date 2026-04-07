@@ -6,7 +6,6 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { URL } from "node:url";
 import { execSync } from "node:child_process";
-import { createInterface } from "node:readline";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { isMacOS } from "../utils/platform.js";
@@ -188,28 +187,39 @@ export async function loginWithBrowser(host: string): Promise<string> {
     }
 
     server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      const redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`;
+      void (async () => {
+        const addr = server.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        const redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`;
 
-      const authUrl = new URL(`https://${host}/oauth/authorize`);
-      authUrl.searchParams.set("client_id", clientId);
-      authUrl.searchParams.set("redirect_uri", redirectUri);
-      authUrl.searchParams.set("response_type", "code");
-      authUrl.searchParams.set("scope", OAUTH_SCOPES);
-      authUrl.searchParams.set("code_challenge", challenge);
-      authUrl.searchParams.set("code_challenge_method", "S256");
-      authUrl.searchParams.set("state", state);
+        const authUrl = new URL(`https://${host}/oauth/authorize`);
+        authUrl.searchParams.set("client_id", clientId);
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("response_type", "code");
+        authUrl.searchParams.set("scope", OAUTH_SCOPES);
+        authUrl.searchParams.set("code_challenge", challenge);
+        authUrl.searchParams.set("code_challenge_method", "S256");
+        authUrl.searchParams.set("state", state);
 
-      const urlStr = authUrl.toString();
-      p.log.info(
-        pc.dim(`If the browser doesn't open, visit:\n${pc.cyan(urlStr)}`),
-      );
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      rl.question(`Press \x1b[1m\x1b[33mEnter\x1b[0m to open browser for GitLab authorization… `, () => {
-        rl.close();
+        const urlStr = authUrl.toString();
+        p.log.info(
+          pc.dim(`If your default browser does not open automatically, visit:\n${pc.cyan(urlStr)}`),
+        );
+        p.log.info(
+          pc.dim(
+            "This tool will try to open your default browser so you can authorize GitLab.",
+          ),
+        );
+
+        await p.text({
+          message:
+            pc.dim("Press ") +
+            pc.bold(pc.yellow("Enter")) +
+            pc.dim(" to try opening your default browser…"),
+          defaultValue: "",
+        });
         openUrl(urlStr);
-      });
+      })();
     });
 
     timer = setTimeout(() => {
