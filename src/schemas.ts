@@ -2,11 +2,53 @@ import { z } from "zod";
 import type { ProviderType } from "./core/git-provider.js";
 
 // ---------------------------------------------------------------------------
+// Kubernetes DNS label (RFC 1123 segment)
+// ---------------------------------------------------------------------------
+
+/** Max length of a single DNS label (Kubernetes names, paths, label values). */
+export const K8S_DNS_LABEL_MAX_LEN = 63;
+
+/**
+ * A single DNS label: lowercase `[a-z0-9]`, digits, `-`, must start/end with alphanumeric.
+ * Matches how Kubernetes names DNS_LABEL segments (repo paths, k3d, labels).
+ */
+export const K8S_DNS_LABEL_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+
+const CLUSTER_NAME_INVALID =
+  "Must be a Kubernetes DNS label: lowercase letters, digits, hyphen only; start and end with a letter or digit; at most 63 characters (uppercase is not accepted)";
+
+/** Zod field for cluster names: trims whitespace; validates as a DNS label without changing letter case. */
+export const clusterNameFieldSchema = z
+  .string()
+  .trim()
+  .min(1, "Cluster name is required")
+  .max(K8S_DNS_LABEL_MAX_LEN, `Must be at most ${K8S_DNS_LABEL_MAX_LEN} characters`)
+  .regex(K8S_DNS_LABEL_RE, CLUSTER_NAME_INVALID);
+
+/** Error message for invalid cluster name input, or undefined if valid. */
+export function clusterNameInputError(raw: string | undefined): string | undefined {
+  const r = clusterNameFieldSchema.safeParse(raw ?? "");
+  if (r.success) return undefined;
+  return r.error.issues[0]?.message ?? CLUSTER_NAME_INVALID;
+}
+
+/** Validate and return trimmed name (use after interactive validation already passed). */
+export function parseClusterName(raw: string | undefined): string {
+  return clusterNameFieldSchema.parse(raw ?? "");
+}
+
+/** Recover a saved install-plan value, or fallback if it is not a valid DNS label. */
+export function clusterNameFromSavedPlan(raw: string | undefined, fallback = "homelab"): string {
+  const r = clusterNameFieldSchema.safeParse(raw ?? fallback);
+  return r.success ? r.data : fallback;
+}
+
+// ---------------------------------------------------------------------------
 // Validation schemas
 // ---------------------------------------------------------------------------
 
 export const ClusterConfigSchema = z.object({
-  clusterName: z.string().min(1),
+  clusterName: clusterNameFieldSchema,
   clusterDomain: z
     .string()
     .min(1)
