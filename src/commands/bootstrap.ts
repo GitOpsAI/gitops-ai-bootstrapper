@@ -38,6 +38,9 @@ import {
   SOURCE_PROJECT_PATH,
   type BootstrapConfig,
   type ComponentDef,
+  clusterNameFromSavedPlan,
+  clusterNameInputError,
+  parseClusterName,
 } from "../schemas.js";
 import { fetchTemplateTags, readPackageVersion } from "../core/template-sync.js";
 import {
@@ -444,24 +447,26 @@ function buildFields(
           : ["Local repo path", resolve(state.repoLocalPath || ".")],
     },
 
-    // ── Cluster name, then optional components, then DNS/TLS toggle ───
+    // ── Cluster name ────────────────────────────────────────────────────
     {
       id: "clusterName",
       section: "Cluster",
       skip: (state) => saved(state, "clusterName"),
       run: async (state) => {
         const v = await p.text({
-          message: pc.bold("Kubernetes cluster name"),
+          message:
+            `${pc.bold("Kubernetes cluster name")}`,
           placeholder: "homelab",
           defaultValue: state.clusterName,
+          validate: (value) => clusterNameInputError(value),
         });
         if (p.isCancel(v)) return back();
-        return { ...state, clusterName: v as string };
+        return { ...state, clusterName: parseClusterName(v as string) };
       },
       review: (state) => ["Name", state.clusterName],
     },
 
-    // ── Components (before DNS/TLS — cert-manager/external-dns added when DNS/TLS is enabled)
+    // ── Components ───────────────────────────────────────────────────────
     {
       id: "selectedComponents",
       section: "Components",
@@ -1262,7 +1267,7 @@ export async function bootstrap(): Promise<void> {
     setupMode: (prev.setupMode as "new" | "existing") ?? "new",
     manageDnsAndTls: savedDnsTls,
     selectedComponents: savedComponents,
-    clusterName: prev.clusterName ?? "homelab",
+    clusterName: clusterNameFromSavedPlan(prev.clusterName),
     clusterDomain: prev.clusterDomain ?? "homelab.click",
     repoName: prev.repoName ?? "fluxcd_ai",
     repoLocalPath: prev.repoLocalPath ?? "",
