@@ -1,19 +1,21 @@
 /**
  * Template upgrade test (invoked from gitops-ai-template PR workflow): bootstrap the template as on
- * `main`, wait for Flux + Helm to settle, merge the PR head, re-apply the cluster directory,
- * push, and verify the stack again — simulating upgrading live clusters to a new template revision.
+ * `main`, wait for Flux + Helm to settle, run the same merge path as `gitops-ai template sync`
+ * (fetch PR head into FETCH_HEAD, diff, merge), re-apply the cluster directory, push, and verify
+ * the stack again — simulating upgrading live clusters to a new template revision.
  *
  * Requires {@link process.env.TEMPLATE_UPGRADE_TEST} === "true" (set by the template repo CI job)
  * and {@link process.env.TEMPLATE_UPGRADE_PR_NUMBER}.
  */
 import { describe, it, before, after } from "node:test";
-import { execSafe } from "../src/utils/shell.js";
+import { execAsync, execSafe } from "../src/utils/shell.js";
 import {
   runBootstrap,
   applyClusterTemplateAndPush,
   type RunBootstrapResult,
 } from "../src/core/bootstrap-runner.js";
 import { reconcile } from "../src/core/flux.js";
+import { mergeUpstreamTemplate } from "../src/core/template-sync.js";
 import { COMPONENTS, type ProviderType } from "../src/schemas.js";
 import {
   FLUX_SYSTEM_NS,
@@ -152,32 +154,29 @@ describe(
     });
 
     it(
-      "should merge PR head, push template upgrade, and reconcile Flux",
+      "should template-sync PR head, push cluster overlay, and reconcile Flux",
       { timeout: 600_000 },
       async () => {
         const pr = process.env.TEMPLATE_UPGRADE_PR_NUMBER!.trim();
         const root = repoRoot!;
-        log(`Merging PR #${pr} into ${TEMPLATE_UPGRADE_BRANCH}`);
-
-        const fetch = execSafe(`git fetch origin pull/${pr}/head`, { cwd: root });
-        if (fetch.exitCode !== 0) {
-          throw new Error(
-            `git fetch pull/${pr}/head failed: ${fetch.stderr || fetch.stdout}`,
-          );
-        }
-
-        const merge = execSafe(
-          `git merge FETCH_HEAD -m "ci: merge PR #${pr} for template upgrade test" -X theirs --no-edit`,
-          { cwd: root },
+        log(
+          `Template sync (merge FETCH_HEAD): PR #${pr} → branch ${TEMPLATE_UPGRADE_BRANCH} (current branch)`,
         );
-        if (merge.exitCode !== 0) {
-          console.error(merge.stderr || merge.stdout);
-          throw new Error("git merge FETCH_HEAD failed (PR may conflict outside template paths)");
-        }
+
+        await mergeUpstreamTemplate({
+          repoRoot: root,
+          ref: `pull/${pr}/head`,
+          dryRun: false,
+          remoteName: "upstream",
+          allowUnrelatedHistories: false,
+        });
+
+        log("Pushing template-sync merge to origin");
+        await execAsync(`git push origin "${TEMPLATE_UPGRADE_BRANCH}"`, { cwd: root });
 
         log("Re-applying cluster template from merged tree and pushing");
         await applyClusterTemplateAndPush(bootstrapConfig(), root, {
-          commitMessage: `ci: regenerate cluster after merging PR #${pr}`,
+          commitMessage: `ci: regenerate cluster after template sync (PR #${pr})`,
         });
 
         const head = execSafe("git rev-parse HEAD", { cwd: root });
