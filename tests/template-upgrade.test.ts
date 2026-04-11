@@ -15,7 +15,12 @@ import {
 } from "../src/core/bootstrap-runner.js";
 import { reconcile } from "../src/core/flux.js";
 import { COMPONENTS, type ProviderType } from "../src/schemas.js";
-import { kubeConfigFromDefault } from "../src/core/k8s-api.js";
+import {
+  FLUX_SYSTEM_NS,
+  kubeConfigFromDefault,
+  reconcileGitRepository,
+  waitForGitRepositoryArtifactContainsSha,
+} from "../src/core/k8s-api.js";
 import {
   resolveRepoRoot,
   waitForDocker,
@@ -174,6 +179,23 @@ describe(
         await applyClusterTemplateAndPush(bootstrapConfig(), root, {
           commitMessage: `ci: regenerate cluster after merging PR #${pr}`,
         });
+
+        const head = execSafe("git rev-parse HEAD", { cwd: root });
+        if (head.exitCode !== 0) {
+          throw new Error(`git rev-parse HEAD failed: ${head.stderr || head.stdout}`);
+        }
+        const pushedSha = head.stdout.trim();
+
+        log("Reconciling GitRepository and waiting for source-controller to fetch pushed revision");
+        const kc = kubeConfigFromDefault();
+        await reconcileGitRepository(kc, FLUX_SYSTEM_NS, "flux-system");
+        await waitForGitRepositoryArtifactContainsSha(
+          kc,
+          FLUX_SYSTEM_NS,
+          "flux-system",
+          pushedSha,
+          300_000,
+        );
 
         log("Triggering Flux reconcile");
         await reconcile();
