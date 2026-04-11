@@ -41,7 +41,8 @@
     "typecheck": "tsc --noEmit",
     "test:validate": "tsx --test tests/validate.ts",
     "test:sync": "tsx --test tests/template-sync.test.ts",
-    "test:integration": "tsx --test tests/integration.test.ts"
+    "test:pod-console": "tsx --test tests/pod-console.test.ts",
+    "test:integration": "tsx --test tests/integration.test.ts && npm run test:pod-console"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",

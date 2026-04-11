@@ -38,6 +38,7 @@ import {
   SOURCE_PROJECT_PATH,
   type BootstrapConfig,
   type ComponentDef,
+  type OpenclawAuthMode,
   clusterNameFromSavedPlan,
   clusterNameInputError,
   parseClusterName,
@@ -86,6 +87,7 @@ interface WizardState {
   gitToken: string;
   gitFluxToken: string;
   cloudflareApiToken: string;
+  openclawAuthMode: OpenclawAuthMode;
   openaiApiKey: string;
   openclawGatewayToken: string;
   ingressAllowedIps: string;
@@ -104,6 +106,10 @@ function dnsAndTlsEnabled(state: WizardState): boolean {
 
 function openclawEnabled(state: WizardState): boolean {
   return state.selectedComponents.includes("openclaw");
+}
+
+function openclawAuthResolved(state: WizardState): OpenclawAuthMode {
+  return state.openclawAuthMode ?? "openai_codex_oauth";
 }
 
 function componentLabel(id: string): string {
@@ -457,11 +463,16 @@ function buildFields(
           message:
             `${pc.bold("Kubernetes cluster name")}`,
           placeholder: "homelab",
-          defaultValue: state.clusterName,
-          validate: (value) => clusterNameInputError(value),
+          defaultValue: state.clusterName || "homelab",
+          validate: (value) => {
+            const t = (value ?? "").trim();
+            if (t === "") return undefined;
+            return clusterNameInputError(t);
+          },
         });
         if (p.isCancel(v)) return back();
-        return { ...state, clusterName: parseClusterName(v as string) };
+        const resolved = ((v as string).trim() || "homelab");
+        return { ...state, clusterName: parseClusterName(resolved) };
       },
       review: (state) => ["Name", state.clusterName],
     },
@@ -655,12 +666,60 @@ function buildFields(
       ],
     },
     {
-      id: "openaiApiKey",
+      id: "openclawAuthMode",
       section: "Credentials & Secrets",
       hidden: (state) => !openclawEnabled(state),
-      skip: (state) => !!state.openaiApiKey,
+      skip: (state) => saved(state, "openclawAuthMode"),
+      run: async (state) => {
+        const v = await p.select({
+          message: pc.bold("How should OpenClaw authenticate to OpenAI?"),
+          options: [
+            {
+              value: "openai_codex_oauth",
+              label: "OpenAI Codex (ChatGPT / Code subscription)",
+              hint: "OAuth after cluster is up — no API key in the repo",
+            },
+            {
+              value: "openai_api_key",
+              label: "OpenAI API key (platform.openai.com)",
+              hint: "usage-based API billing — key stored SOPS-encrypted in Git",
+            },
+          ],
+          initialValue: state.openclawAuthMode,
+        });
+        if (p.isCancel(v)) return back();
+        const mode = v as OpenclawAuthMode;
+        const openclawGatewayToken =
+          state.openclawGatewayToken || exec("openssl rand -hex 32");
+        return {
+          ...state,
+          openclawAuthMode: mode,
+          openclawGatewayToken,
+          openaiApiKey: mode === "openai_codex_oauth" ? "" : state.openaiApiKey,
+        };
+      },
+      review: (state) => [
+        "OpenClaw → OpenAI",
+        openclawAuthResolved(state) === "openai_codex_oauth"
+          ? "Codex subscription (OAuth after install)"
+          : "API key (encrypted in repo)",
+      ],
+    },
+    {
+      id: "openaiApiKey",
+      section: "Credentials & Secrets",
+      hidden: (state) =>
+        !openclawEnabled(state) ||
+        openclawAuthResolved(state) === "openai_codex_oauth",
+      skip: (state) =>
+        !!state.openaiApiKey && openclawAuthResolved(state) === "openai_api_key",
       run: async (state) => {
         if (isCI()) {
+          if (openclawAuthResolved(state) === "openai_codex_oauth") {
+            const openclawGatewayToken =
+              state.openclawGatewayToken || exec("openssl rand -hex 32");
+            return { ...state, openaiApiKey: "", openclawGatewayToken };
+          }
           const v = await p.password({
             message: pc.bold("OpenAI API Key"),
             validate: (v) => { if (!v) return "Required"; },
@@ -780,7 +839,7 @@ function buildFields(
           if (p.isCancel(confirmIp)) return back();
 
           const restriction = await p.select({
-            message: pc.bold("Restrict ingress access?"),
+            message: pc.bold("Restrict access with ingress allowlist?"),
             options: [
               {
                 value: "open",
@@ -1083,64 +1142,6 @@ async function createAndCloneRepo(wizard: WizardState): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Openclaw device pairing (sub-command)
-// ---------------------------------------------------------------------------
-
-export async function openclawPair(): Promise<void> {
-  header("OpenClaw Device Pairing");
-
-  p.log.info("1. Open Claude UI in your browser");
-  p.log.info("2. Enter your Gateway Token and click Connect");
-
-  const ready = await p.confirm({
-    message: "Have you submitted the pairing request?",
-  });
-  if (p.isCancel(ready) || !ready) handleCancel();
-
-  log.step("Listing pending device requests");
-  try {
-    const kc = k8sApi.kubeConfigFromDefault();
-    const code = await k8sApi.execInDeploymentContainerTty(
-      kc,
-      "openclaw",
-      "openclaw",
-      "main",
-      ["node", "dist/index.js", "devices", "list"],
-    );
-    if (code !== 0) {
-      log.error("devices list failed");
-      return process.exit(1) as never;
-    }
-  } catch {
-    log.error("Failed to list device requests");
-    return process.exit(1) as never;
-  }
-
-  const requestId = await p.text({
-    message: "Enter REQUEST_ID to approve",
-    validate: (v) => {
-      if (!v) return "REQUEST_ID must not be empty";
-    },
-  });
-  if (p.isCancel(requestId)) handleCancel();
-
-  log.step(`Approving device ${requestId}`);
-  const kcApprove = k8sApi.kubeConfigFromDefault();
-  const approve = await k8sApi.execInDeploymentContainer(
-    kcApprove,
-    "openclaw",
-    "openclaw",
-    "main",
-    ["node", "dist/index.js", "devices", "approve", requestId as string],
-  );
-  if (approve.exitCode !== 0) {
-    log.error(approve.stderr || "approve failed");
-    return process.exit(1) as never;
-  }
-  log.success("Device paired successfully");
-}
-
-// ---------------------------------------------------------------------------
 // Main bootstrap flow
 // ---------------------------------------------------------------------------
 
@@ -1279,6 +1280,16 @@ export async function bootstrap(): Promise<void> {
     gitToken: prev.gitToken ?? "",
     gitFluxToken: prev.gitFluxToken ?? "",
     cloudflareApiToken: prev.cloudflareApiToken ?? "",
+    openclawAuthMode: ((): OpenclawAuthMode => {
+      if (
+        prev.openclawAuthMode === "openai_codex_oauth" ||
+        prev.openclawAuthMode === "openai_api_key"
+      ) {
+        return prev.openclawAuthMode as OpenclawAuthMode;
+      }
+      const hadSavedApiKey = !!(prev.openaiApiKey && String(prev.openaiApiKey).trim());
+      return hadSavedApiKey ? "openai_api_key" : "openai_codex_oauth";
+    })(),
     openaiApiKey: prev.openaiApiKey ?? "",
     openclawGatewayToken: prev.openclawGatewayToken ?? "",
     ingressAllowedIps: prev.ingressAllowedIps ?? "0.0.0.0/0",
@@ -1309,6 +1320,7 @@ export async function bootstrap(): Promise<void> {
     repoBranch: wizard.repoBranch,
     templateTag: wizard.templateTag,
     cloudflareApiToken: wizard.cloudflareApiToken,
+    openclawAuthMode: wizard.openclawAuthMode,
     openaiApiKey: wizard.openaiApiKey ?? "",
     openclawGatewayToken: wizard.openclawGatewayToken ?? "",
     selectedComponents: wizard.selectedComponents.join(","),
@@ -1423,7 +1435,14 @@ export async function bootstrap(): Promise<void> {
     repoOwner: wizard.repoOwner,
     repoBranch: wizard.repoBranch,
     cloudflareApiToken: wizard.cloudflareApiToken,
-    openaiApiKey: isOpenclawEnabled ? wizard.openaiApiKey : undefined,
+    openclawAuthMode: isOpenclawEnabled
+      ? openclawAuthResolved(wizard)
+      : undefined,
+    openaiApiKey:
+      isOpenclawEnabled &&
+      openclawAuthResolved(wizard) === "openai_api_key"
+        ? wizard.openaiApiKey
+        : undefined,
     openclawGatewayToken: isOpenclawEnabled
       ? wizard.openclawGatewayToken
       : undefined,
@@ -1492,14 +1511,10 @@ export async function bootstrap(): Promise<void> {
   if (status) p.log.message(status);
 
   const summaryEntries: Record<string, string> = {
-    "Cluster": fullConfig.clusterName,
-    "Domain": fullConfig.clusterDomain,
+    Cluster: fullConfig.clusterName,
+    Domain: fullConfig.clusterDomain,
     "Public IP": fullConfig.clusterPublicIp,
-    "Components": selectedComponents.length.toString(),
   };
-  if (isOpenclawEnabled && fullConfig.openclawGatewayToken) {
-    summaryEntries["OpenClaw Gateway Token"] = fullConfig.openclawGatewayToken;
-  }
   summary("Bootstrap Complete", summaryEntries);
 
   const finalSteps = [
@@ -1542,8 +1557,13 @@ export async function bootstrap(): Promise<void> {
   if (isOpenclawEnabled) {
     finalSteps.push(
       `Open OpenClaw at ${pc.cyan(`https://openclaw.${fullConfig.clusterDomain}`)}`,
-      `Pair a device: ${pc.cyan("npx gitops-ai openclaw-pair")}`,
     );
+    if (openclawAuthResolved(wizard) === "openai_codex_oauth") {
+      finalSteps.push(
+        `Sign in with OpenAI Codex (OAuth): ${pc.cyan("npx gitops-ai openclaw-codex-login")}`,
+      );
+    }
+    finalSteps.push(`Pair a device: ${pc.cyan("npx gitops-ai openclaw-pair")}`);
   }
   finalSteps.push(
     `Your infrastructure is managed via ${pc.bold("GitOps")} — push to '${fullConfig.repoBranch}' to deploy changes.`,

@@ -383,15 +383,20 @@ async function setupSops(
     log.detail("Encrypted: external-dns/secret-cloudflare.yaml");
   }
 
-  if (
+  const openclawAuth =
+    config.openclawAuthMode ?? "openai_api_key";
+  const openclawSecretOk =
     selected.includes("openclaw") &&
-    config.openaiApiKey &&
-    config.openclawGatewayToken
-  ) {
+    config.openclawGatewayToken &&
+    (openclawAuth === "openai_codex_oauth" ||
+      (openclawAuth === "openai_api_key" && !!config.openaiApiKey));
+
+  if (openclawSecretOk && config.openclawGatewayToken) {
     encryption.substituteAndEncrypt(
       `${componentsDir}/openclaw/secret-openclaw-envs.yaml`,
       {
-        OPENAI_API_KEY: config.openaiApiKey,
+        OPENAI_API_KEY:
+          openclawAuth === "openai_codex_oauth" ? "" : (config.openaiApiKey ?? ""),
         OPENCLAW_GATEWAY_TOKEN: config.openclawGatewayToken,
       },
       sopsCfg,
