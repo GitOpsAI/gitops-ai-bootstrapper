@@ -68,10 +68,15 @@ export const GitConfigSchema = z.object({
   repoBranch: z.string().min(1),
 });
 
+export const OPENCLAW_AUTH_MODES = ["openai_api_key", "openai_codex_oauth"] as const;
+export type OpenclawAuthMode = (typeof OPENCLAW_AUTH_MODES)[number];
+
 export const SecretsConfigSchema = z.object({
   cloudflareApiToken: z.string().optional(),
   openaiApiKey: z.string().optional(),
   openclawGatewayToken: z.string().optional(),
+  /** OpenClaw: platform API key in Git (SOPS) vs Codex subscription via OAuth after install */
+  openclawAuthMode: z.enum(OPENCLAW_AUTH_MODES).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -123,7 +128,7 @@ export const COMPONENTS: ComponentDef[] = [
   { id: "grafana-operator", label: "Grafana Operator", hint: "Grafana dashboards and datasources via CRDs", required: false, subdomain: "grafana" },
   { id: "victoria-metrics-k8s-stack", label: "Victoria Metrics Stack", hint: "Metrics collection, alerting and long-term storage", required: false, subdomain: "victoria" },
   { id: "flux-web", label: "Flux Web UI", hint: "Web dashboard for Flux status", required: false, subdomain: "flux" },
-  { id: "openclaw", label: "OpenClaw", hint: "AI assistant gateway (requires OpenAI key)", required: false, secrets: ["secret-openclaw-envs.yaml"], subdomain: "openclaw" },
+  { id: "openclaw", label: "OpenClaw", hint: "AI gateway — OpenAI API key or Codex (OAuth) after install", required: false, secrets: ["secret-openclaw-envs.yaml"], subdomain: "openclaw" },
 ];
 
 export const REQUIRED_COMPONENT_IDS = COMPONENTS.filter((c) => c.required).map((c) => c.id);
