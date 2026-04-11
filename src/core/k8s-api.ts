@@ -12,6 +12,10 @@ import { resolveBootstrapKubeconfigPath } from "../utils/bootstrap-kubeconfig.js
 
 export const FLUX_SYSTEM_NS = "flux-system";
 
+/** Flux `GitRepository` (source-controller). */
+export const FLUX_SOURCE_GROUP = "source.toolkit.fluxcd.io";
+export const FLUX_SOURCE_VERSION = "v1";
+
 export const FLUX_INSTANCE_GROUP = "fluxcd.controlplane.io";
 export const FLUX_INSTANCE_VERSION = "v1";
 export const FLUX_INSTANCE_PLURAL = "fluxinstances";
@@ -623,4 +627,81 @@ export async function reconcileFluxInstance(
     body: merged,
   });
   await waitForFluxInstanceReady(kc, timeoutMs);
+}
+
+function gitRepositoryArtifactRevision(obj: unknown): string {
+  const o = obj as {
+    status?: { artifact?: { revision?: string } };
+  };
+  return o.status?.artifact?.revision ?? "";
+}
+
+/**
+ * Annotates a Flux {@link https://fluxcd.io/flux/components/source/gitrepositories/ GitRepository}
+ * so source-controller reconciles and fetches from the remote (same mechanism as `flux reconcile source git`).
+ */
+export async function reconcileGitRepository(
+  kc: k8s.KubeConfig,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  const { custom } = makeClients(kc);
+  const ts = Math.floor(Date.now() / 1000);
+  const existing = await custom.getNamespacedCustomObject({
+    group: FLUX_SOURCE_GROUP,
+    version: FLUX_SOURCE_VERSION,
+    namespace,
+    plural: "gitrepositories",
+    name,
+  });
+  const merged = existing as Record<string, unknown>;
+  const meta = (merged.metadata ?? {}) as Record<string, unknown>;
+  const prev = (meta.annotations ?? {}) as Record<string, string>;
+  const ann = { ...prev, "reconcile.fluxcd.io/requestedAt": String(ts) };
+  meta.annotations = ann;
+  merged.metadata = meta;
+  await custom.replaceNamespacedCustomObject({
+    group: FLUX_SOURCE_GROUP,
+    version: FLUX_SOURCE_VERSION,
+    namespace,
+    plural: "gitrepositories",
+    name,
+    body: merged,
+  });
+}
+
+/**
+ * Waits until {@link status.artifact.revision} references the given commit (Flux uses forms like
+ * `refs/heads/branch@sha1:<40-char-sha>`).
+ */
+export async function waitForGitRepositoryArtifactContainsSha(
+  kc: k8s.KubeConfig,
+  namespace: string,
+  name: string,
+  fullSha: string,
+  timeoutMs: number,
+): Promise<void> {
+  const { custom } = makeClients(kc);
+  const normalized = fullSha.trim().toLowerCase();
+  if (!/^[0-9a-f]{7,40}$/.test(normalized)) {
+    throw new Error(`Invalid git SHA for wait: ${fullSha}`);
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const obj = await custom.getNamespacedCustomObject({
+      group: FLUX_SOURCE_GROUP,
+      version: FLUX_SOURCE_VERSION,
+      namespace,
+      plural: "gitrepositories",
+      name,
+    });
+    const rev = gitRepositoryArtifactRevision(obj).toLowerCase();
+    if (rev.includes(normalized)) {
+      return;
+    }
+    await sleep(2000);
+  }
+  throw new Error(
+    `Timed out after ${timeoutMs}ms waiting for GitRepository ${namespace}/${name} artifact to include commit ${fullSha.slice(0, 12)}…`,
+  );
 }
