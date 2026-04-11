@@ -15,6 +15,7 @@ import {
 } from "../src/core/bootstrap-runner.js";
 import { reconcile } from "../src/core/flux.js";
 import { COMPONENTS, type ProviderType } from "../src/schemas.js";
+import { kubeConfigFromDefault } from "../src/core/k8s-api.js";
 import {
   resolveRepoRoot,
   waitForDocker,
@@ -24,6 +25,9 @@ import {
   waitForFluxClusterComponentsAndHelm,
   assertHealthyClusterNodes,
   assertFluxOperatorRunning,
+  getHelmReleaseVersionSnapshots,
+  logHelmReleaseVersionDiff,
+  type HelmReleaseVersionSnapshot,
 } from "./flux-ci-helpers.js";
 
 const templateUpgradeTestEnabled =
@@ -55,6 +59,8 @@ const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
 
 let result: RunBootstrapResult;
 let repoRoot: string | undefined;
+/** Helm chart versions observed after main baseline (before PR merge). */
+let helmVersionsBaseline: Map<string, HelmReleaseVersionSnapshot> | undefined;
 
 function remoteUrl(): string {
   if (GIT_PROVIDER === "github") {
@@ -126,6 +132,14 @@ describe(
     it("should reconcile all components on main baseline", { timeout: 1_200_000 }, async (t) => {
       try {
         await waitForFluxClusterComponentsAndHelm(result, t);
+        helmVersionsBaseline = await getHelmReleaseVersionSnapshots(kubeConfigFromDefault());
+        log("Helm chart versions (main baseline)");
+        for (const key of [...helmVersionsBaseline.keys()].sort()) {
+          const s = helmVersionsBaseline.get(key)!;
+          console.log(
+            `  ${key}  ${s.chartName} · chart ${s.chartVersion}${s.appVersion ? ` · app ${s.appVersion}` : ""}`,
+          );
+        }
       } catch (err) {
         await logFluxDiagnostics("template-upgrade: baseline stack ready");
         throw err;
@@ -177,6 +191,12 @@ describe(
     it("should reconcile all components after PR upgrade", { timeout: 1_200_000 }, async (t) => {
       try {
         await waitForFluxClusterComponentsAndHelm(result, t);
+        const helmVersionsAfter = await getHelmReleaseVersionSnapshots(kubeConfigFromDefault());
+        logHelmReleaseVersionDiff(
+          "Helm chart versions: main baseline → after PR upgrade",
+          helmVersionsBaseline ?? new Map(),
+          helmVersionsAfter,
+        );
       } catch (err) {
         await logFluxDiagnostics("template-upgrade: post-upgrade stack ready");
         throw err;

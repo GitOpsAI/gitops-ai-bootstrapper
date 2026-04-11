@@ -267,6 +267,102 @@ export async function listAllHelmReleaseRefs(
   return refs;
 }
 
+/** Deployed chart revision from {@link HelmRelease} `status.history[0]` (Flux helm-controller). */
+export interface HelmReleaseVersionSnapshot {
+  chartName: string;
+  chartVersion: string;
+  appVersion?: string;
+}
+
+function helmRefKey(namespace: string, name: string): string {
+  return `${namespace}/${name}`;
+}
+
+function snapshotFromHelmReleaseItem(item: unknown): HelmReleaseVersionSnapshot | undefined {
+  const o = item as {
+    status?: {
+      history?: Array<{ chartName?: string; chartVersion?: string; appVersion?: string }>;
+    };
+  };
+  const h = o.status?.history?.[0];
+  if (!h) return undefined;
+  const chartVersion = h.chartVersion?.trim();
+  const chartName = h.chartName?.trim();
+  if (!chartVersion && !chartName) return undefined;
+  return {
+    chartName: chartName ?? "?",
+    chartVersion: chartVersion ?? "?",
+    appVersion: h.appVersion?.trim() || undefined,
+  };
+}
+
+/** Reads all HelmReleases and records chart name/version from the latest successful release in status. */
+export async function getHelmReleaseVersionSnapshots(
+  kc: KubeConfig,
+): Promise<Map<string, HelmReleaseVersionSnapshot>> {
+  const { custom } = makeClients(kc);
+  const list = await custom.listCustomObjectForAllNamespaces({
+    group: HELM_GROUP,
+    version: HELM_V2,
+    plural: "helmreleases",
+  });
+  const body = list as {
+    items?: Array<{ metadata?: { namespace?: string; name?: string } }>;
+  };
+  const map = new Map<string, HelmReleaseVersionSnapshot>();
+  for (const item of body.items ?? []) {
+    const ns = item.metadata?.namespace;
+    const n = item.metadata?.name;
+    if (!ns || !n) continue;
+    const snap = snapshotFromHelmReleaseItem(item);
+    if (snap) map.set(helmRefKey(ns, n), snap);
+  }
+  return map;
+}
+
+function formatHelmSnapshot(s: HelmReleaseVersionSnapshot | undefined): string {
+  if (!s) return "(unknown)";
+  const parts = [`chart ${s.chartVersion}`];
+  if (s.chartName && s.chartName !== "?") parts.unshift(s.chartName);
+  if (s.appVersion) parts.push(`app ${s.appVersion}`);
+  return parts.join(" · ");
+}
+
+/**
+ * Logs Helm chart/app version changes between two snapshots (e.g. main baseline vs after PR upgrade).
+ */
+export function logHelmReleaseVersionDiff(
+  title: string,
+  before: Map<string, HelmReleaseVersionSnapshot>,
+  after: Map<string, HelmReleaseVersionSnapshot>,
+): void {
+  log(title);
+  const keys = new Set([...before.keys(), ...after.keys()]);
+  for (const key of [...keys].sort()) {
+    const b = before.get(key);
+    const a = after.get(key);
+    if (!b && a) {
+      console.log(`  ${key}  (new)  ${formatHelmSnapshot(a)}`);
+      continue;
+    }
+    if (b && !a) {
+      console.log(`  ${key}  (removed)  was ${formatHelmSnapshot(b)}`);
+      continue;
+    }
+    if (!b || !a) continue;
+    const same =
+      b.chartVersion === a.chartVersion &&
+      b.appVersion === a.appVersion &&
+      b.chartName === a.chartName;
+    if (same) {
+      console.log(`  ${key}  unchanged  ${formatHelmSnapshot(a)}`);
+    } else {
+      console.log(`  ${key}`);
+      console.log(`    ${formatHelmSnapshot(b)}  →  ${formatHelmSnapshot(a)}`);
+    }
+  }
+}
+
 export async function waitForDocker(timeoutMs = 60_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
