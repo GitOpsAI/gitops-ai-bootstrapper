@@ -2,6 +2,30 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.3.0
+
+### Added
+
+- **`gitops-ai pod-console` (`shell`)** — open an interactive shell in a pod (pick from the cluster or pass a pod name); optional namespace filtering.
+- **`gitops-ai openclaw-codex-login`** — complete OpenAI Codex (ChatGPT subscription) OAuth inside the OpenClaw pod after bootstrap.
+- **Kubernetes name validation** — cluster and related names are validated against Kubernetes naming rules during the wizard.
+- **Template upgrade testing** — `npm run test:template-upgrade` and shared **flux-ci-helpers** for Flux-oriented tests; integration tests refactored to use the new helpers.
+
+### Changed
+
+- **Bootstrap runner and Kubernetes integration** — expanded `@kubernetes/client-node` usage in **k8s-api** and bootstrap flows to support pod exec and related operations without host `kubectl`/`helm`.
+- **Bootstrap wizard** — updates to accommodate validation, OpenClaw commands, and revised final steps.
+- **CI** — workflow updates for the new tests and commands (GitHub Actions and GitLab CI).
+
+## 1.2.4
+
+### Fixed
+
+- **Cloudflare OAuth** — simplified and corrected the browser OAuth flow (leaner `cloudflare-oauth` implementation).
+- **GitHub / GitLab OAuth** — small fixes aligned with the Cloudflare auth changes.
+- **Final bootstrap command** — corrected the command printed at the end of the wizard.
+- **Wizard copy** — clearer text and a smoother step order.
+
 ## 1.2.3
 
 ### Added
@@ -62,3 +86,9 @@ All notable changes to the **gitops-ai** bootstrapper CLI are documented here. V
 - **No more `glab` or `jq`** — all GitLab interactions now use the REST API directly; fewer CLI tools to install
 - **Improved post-bootstrap summary** — shows Grafana and Victoria Metrics URLs when monitoring is enabled; suggests installing k9s if not already present
 - **Live status during Flux startup** — the spinner shows pod readiness while waiting for Flux controllers to come up
+
+## 1.0.0
+
+### Added
+
+- **Initial `gitops-ai` CLI** — interactive TUI for bootstrapping Flux-based GitOps on Kubernetes (k3d/k3s-oriented flows).
