@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
+import {
+  bootstrapKubeconfigFileForCluster,
+  writeBootstrapKubeconfigMarker,
+} from "../utils/bootstrap-kubeconfig.js";
 import { KUBERNETES_VERSION } from "../schemas.js";
 import * as k8sApi from "./k8s-api.js";
 
@@ -91,18 +95,20 @@ export function setupKubeconfig(clusterName: string): string {
   mkdirSync(`${process.env.HOME}/.kube`, { recursive: true });
 
   if (isMacOS() || isCI()) {
-    const kubeconfigPath = `${process.env.HOME}/.kube/k3d-${clusterName}`;
+    const kubeconfigPath = bootstrapKubeconfigFileForCluster(clusterName);
     const kubeconfig = exec(`k3d kubeconfig get ${clusterName}`);
     writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });
     process.env.KUBECONFIG = kubeconfigPath;
+    writeBootstrapKubeconfigMarker(kubeconfigPath);
     return kubeconfigPath;
   }
 
   exec("sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config");
   exec('sudo chown "$(id -u):$(id -g)" $HOME/.kube/config');
   exec("chmod 600 $HOME/.kube/config");
-  const kubeconfigPath = `${process.env.HOME}/.kube/config`;
+  const kubeconfigPath = bootstrapKubeconfigFileForCluster(clusterName);
   process.env.KUBECONFIG = kubeconfigPath;
+  writeBootstrapKubeconfigMarker(kubeconfigPath);
   return kubeconfigPath;
 }
 

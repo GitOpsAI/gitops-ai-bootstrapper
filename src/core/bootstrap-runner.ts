@@ -129,47 +129,7 @@ export async function runBootstrap(
     log.success("flux-system secret created");
   }
 
-  // ── Clone template if not present ─────────────────────────────────
-  const templateDir = `${repoRoot}/clusters/_template`;
-
-  if (!existsSync(templateDir)) {
-    await cloneTemplate(repoRoot);
-  }
-
-  // Root `flux-instance.yaml` is required for `flux-operator install -f`. A full template
-  // clone copies it, but existing repos may already have `clusters/_template` from an older
-  // layout without this file — fetch the canonical manifest from the template default branch.
-  await ensureFluxInstanceYaml(repoRoot);
-
-  // ── Cluster template ──────────────────────────────────────────────
-  const clusterDir = `${repoRoot}/clusters/${config.clusterName}`;
-
-  if (existsSync(templateDir)) {
-    log.step(`Configuring cluster template for '${config.clusterName}'`);
-    mkdirSync(clusterDir, { recursive: true });
-    cpSync(templateDir, clusterDir, { recursive: true });
-    log.detail(`Copied template → ${clusterDir}`);
-
-    const syncFile = `${clusterDir}/cluster-sync.yaml`;
-    if (existsSync(syncFile)) {
-      writeFileSync(
-        syncFile,
-        envsubst(readFileSync(syncFile, "utf-8"), {
-          CLUSTER_NAME: config.clusterName,
-          CLUSTER_DOMAIN: config.clusterDomain,
-          CLUSTER_PUBLIC_IP: config.clusterPublicIp,
-          LETSENCRYPT_EMAIL: config.letsencryptEmail ?? "",
-          INGRESS_NGINX_ALLOWED_IPS: config.ingressAllowedIps,
-        }),
-      );
-      log.detail("Rendered cluster-sync.yaml with cluster vars");
-    }
-
-    pruneDisabledComponents(clusterDir, config.selectedComponents);
-  }
-
-  // ── SOPS encryption ───────────────────────────────────────────────
-  await setupSops(config, repoRoot, clusterDir);
+  await configureClusterTemplateInRepo(config, repoRoot);
 
   // ── Git commit & push ─────────────────────────────────────────────
   await withSpinner("Committing and pushing to Git", async () => {
@@ -198,6 +158,99 @@ export async function runBootstrap(
   }
 
   return { fluxInstanceInstalled };
+}
+
+/**
+ * Copies `clusters/_template` into `clusters/<clusterName>`, renders vars, prunes components,
+ * and runs SOPS setup. Does not commit, push, or touch the Kubernetes cluster.
+ */
+export async function configureClusterTemplateInRepo(
+  config: BootstrapConfig,
+  repoRoot: string,
+): Promise<string> {
+  const templateDir = `${repoRoot}/clusters/_template`;
+
+  if (!existsSync(templateDir)) {
+    await cloneTemplate(repoRoot);
+  }
+
+  await ensureFluxInstanceYaml(repoRoot);
+
+  if (!existsSync(templateDir)) {
+    throw new Error(`clusters/_template is missing after template resolution: ${repoRoot}`);
+  }
+
+  const clusterDir = `${repoRoot}/clusters/${config.clusterName}`;
+
+  log.step(`Configuring cluster template for '${config.clusterName}'`);
+  mkdirSync(clusterDir, { recursive: true });
+  cpSync(templateDir, clusterDir, { recursive: true });
+  log.detail(`Copied template → ${clusterDir}`);
+
+  const syncFile = `${clusterDir}/cluster-sync.yaml`;
+  if (existsSync(syncFile)) {
+    writeFileSync(
+      syncFile,
+      envsubst(readFileSync(syncFile, "utf-8"), {
+        CLUSTER_NAME: config.clusterName,
+        CLUSTER_DOMAIN: config.clusterDomain,
+        CLUSTER_PUBLIC_IP: config.clusterPublicIp,
+        LETSENCRYPT_EMAIL: config.letsencryptEmail ?? "",
+        INGRESS_NGINX_ALLOWED_IPS: config.ingressAllowedIps,
+      }),
+    );
+    log.detail("Rendered cluster-sync.yaml with cluster vars");
+  }
+
+  pruneDisabledComponents(clusterDir, config.selectedComponents);
+
+  await setupSops(config, repoRoot, clusterDir);
+
+  return clusterDir;
+}
+
+export interface ApplyClusterTemplateOptions {
+  /** Defaults to a generic CI upgrade message. */
+  commitMessage?: string;
+}
+
+/**
+ * Re-runs {@link configureClusterTemplateInRepo}, then commits and pushes to `config.repoBranch`.
+ * Use when the Git tree already contains a newer template revision (e.g. merged PR) but the
+ * cluster directory must be regenerated — does not create a cluster or install Flux.
+ */
+export async function applyClusterTemplateAndPush(
+  config: BootstrapConfig,
+  repoRootInput: string,
+  options?: ApplyClusterTemplateOptions,
+): Promise<void> {
+  let repoRoot: string;
+  try {
+    repoRoot = realpathSync(resolvePath(repoRootInput));
+  } catch {
+    throw new Error(`Repo path does not exist: ${repoRootInput}`);
+  }
+  if (execSafe("git rev-parse --is-inside-work-tree", { cwd: repoRoot }).exitCode !== 0) {
+    throw new Error(`Not a git work tree: ${repoRoot}`);
+  }
+
+  await configureClusterTemplateInRepo(config, repoRoot);
+
+  const msg =
+    options?.commitMessage ??
+    `ci: apply cluster template update (${config.clusterName})`;
+
+  await withSpinner("Committing and pushing template update", async () => {
+    resetLocalWorkflowFiles(repoRoot);
+
+    await execAsync("git add .", { cwd: repoRoot });
+    if (execSafe("git diff --cached --quiet", { cwd: repoRoot }).exitCode === 0) {
+      log.warn("No staged changes after configureClusterTemplateInRepo — skipping commit/push");
+      return;
+    }
+    await execAsync(`git commit -m ${JSON.stringify(msg)}`, { cwd: repoRoot });
+    await execAsync(`git push origin "${config.repoBranch}"`, { cwd: repoRoot });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -383,15 +436,20 @@ async function setupSops(
     log.detail("Encrypted: external-dns/secret-cloudflare.yaml");
   }
 
-  if (
+  const openclawAuth =
+    config.openclawAuthMode ?? "openai_api_key";
+  const openclawSecretOk =
     selected.includes("openclaw") &&
-    config.openaiApiKey &&
-    config.openclawGatewayToken
-  ) {
+    config.openclawGatewayToken &&
+    (openclawAuth === "openai_codex_oauth" ||
+      (openclawAuth === "openai_api_key" && !!config.openaiApiKey));
+
+  if (openclawSecretOk && config.openclawGatewayToken) {
     encryption.substituteAndEncrypt(
       `${componentsDir}/openclaw/secret-openclaw-envs.yaml`,
       {
-        OPENAI_API_KEY: config.openaiApiKey,
+        OPENAI_API_KEY:
+          openclawAuth === "openai_codex_oauth" ? "" : (config.openaiApiKey ?? ""),
         OPENCLAW_GATEWAY_TOKEN: config.openclawGatewayToken,
       },
       sopsCfg,

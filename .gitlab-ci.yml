@@ -97,6 +97,7 @@ trivy-scan:
 # Stage: integration  (merge requests)
 # ---------------------------------------------------------------------------
 
+# After bootstrap integration (cluster exists), runs pod-console unit tests — see package.json test:integration.
 integration-test:
   stage: integration
   image: node:25-alpine@sha256:ad82ecad30371c43f4057aaa4800a8ed88f9446553a2d21323710c7b937177fc
@@ -111,7 +112,7 @@ integration-test:
     - apk add --no-cache docker-cli git curl openssl bash sudo
     - npm ci --ignore-scripts
   script:
-    - npx tsx --test tests/integration.test.ts
+    - npm run test:integration
   after_script:
     - |
       git push "https://oauth2:${GITLAB_PAT}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" \
