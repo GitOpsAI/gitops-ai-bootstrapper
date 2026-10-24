@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 import { isMacOS, isCI } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
@@ -416,41 +417,37 @@ async function setupSops(
   const componentsDir = `${clusterDir}/components`;
   const selected = config.selectedComponents;
 
-  if (selected.includes("cert-manager") && config.cloudflareApiToken) {
-    encryption.substituteAndEncrypt(
-      `${componentsDir}/cert-manager/secret-cloudflare.yaml`,
-      { CLOUDFLARE_API_TOKEN: config.cloudflareApiToken },
+  const cloudflareApiToken = config.cloudflareApiToken ?? "";
+  for (const component of ["cert-manager", "external-dns"]) {
+    if (!selected.includes(component)) continue;
+    if (!cloudflareApiToken) {
+      log.warn(`${component}: no Cloudflare API token provided; DNS-01/DNS records will not work until it is set`);
+    }
+    await encryption.substituteAndEncrypt(
+      `${componentsDir}/${component}/secret-cloudflare.yaml`,
+      { CLOUDFLARE_API_TOKEN: cloudflareApiToken },
       sopsCfg,
       repoRoot,
     );
-    log.detail("Encrypted: cert-manager/secret-cloudflare.yaml");
+    log.detail(`Encrypted: ${component}/secret-cloudflare.yaml`);
   }
 
-  if (selected.includes("external-dns") && config.cloudflareApiToken) {
-    encryption.substituteAndEncrypt(
-      `${componentsDir}/external-dns/secret-cloudflare.yaml`,
-      { CLOUDFLARE_API_TOKEN: config.cloudflareApiToken },
-      sopsCfg,
-      repoRoot,
-    );
-    log.detail("Encrypted: external-dns/secret-cloudflare.yaml");
-  }
-
-  const openclawAuth =
-    config.openclawAuthMode ?? "openai_api_key";
-  const openclawSecretOk =
-    selected.includes("openclaw") &&
-    config.openclawGatewayToken &&
-    (openclawAuth === "openai_codex_oauth" ||
-      (openclawAuth === "openai_api_key" && !!config.openaiApiKey));
-
-  if (openclawSecretOk && config.openclawGatewayToken) {
-    encryption.substituteAndEncrypt(
+  if (selected.includes("openclaw")) {
+    const openclawAuth = config.openclawAuthMode ?? "openai_api_key";
+    const openaiApiKey =
+      openclawAuth === "openai_codex_oauth" ? "" : (config.openaiApiKey ?? "");
+    if (openclawAuth === "openai_api_key" && !openaiApiKey) {
+      log.warn("openclaw: no OpenAI API key provided; model calls will fail until it is set");
+    }
+    const gatewayToken = config.openclawGatewayToken || randomBytes(32).toString("hex");
+    if (!config.openclawGatewayToken) {
+      log.detail("openclaw: generated a random gateway token");
+    }
+    await encryption.substituteAndEncrypt(
       `${componentsDir}/openclaw/secret-openclaw-envs.yaml`,
       {
-        OPENAI_API_KEY:
-          openclawAuth === "openai_codex_oauth" ? "" : (config.openaiApiKey ?? ""),
-        OPENCLAW_GATEWAY_TOKEN: config.openclawGatewayToken,
+        OPENAI_API_KEY: openaiApiKey,
+        OPENCLAW_GATEWAY_TOKEN: gatewayToken,
       },
       sopsCfg,
       repoRoot,
