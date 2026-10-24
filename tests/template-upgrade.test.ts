@@ -8,6 +8,7 @@
  * and {@link process.env.TEMPLATE_UPGRADE_PR_NUMBER}.
  */
 import { describe, it, before, after } from "node:test";
+import { randomBytes } from "node:crypto";
 import { execAsync, execSafe } from "../src/utils/shell.js";
 import {
   runBootstrap,
@@ -63,6 +64,7 @@ const TEMPLATE_UPGRADE_BRANCH = `ci-template-upgrade-${CI_PIPELINE_ID}`;
 const CLUSTER_NAME = "ci-test";
 
 const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
+const OPENCLAW_GATEWAY_TOKEN = randomBytes(32).toString("hex");
 
 let result: RunBootstrapResult;
 let repoRoot: string | undefined;
@@ -90,6 +92,7 @@ function bootstrapConfig() {
     repoOwner: CI_PROJECT_NAMESPACE,
     repoBranch: TEMPLATE_UPGRADE_BRANCH,
     selectedComponents: ALL_COMPONENT_IDS,
+    openclawGatewayToken: OPENCLAW_GATEWAY_TOKEN,
   };
 }
 

@@ -7,6 +7,7 @@ import {
   mkdirSync,
   copyFileSync,
   chmodSync,
+  rmSync,
 } from "node:fs";
 import { join, basename, relative } from "node:path";
 import { exec, execSafe, execAsync } from "../utils/shell.js";
@@ -233,12 +234,12 @@ export function getSecretStatus(repoRoot: string): SecretFileStatus[] {
 // Template substitution for secrets
 // ---------------------------------------------------------------------------
 
-export function substituteAndEncrypt(
+export async function substituteAndEncrypt(
   file: string,
   vars: Record<string, string>,
   cfg: SopsConfig,
   repoRoot: string,
-): void {
+): Promise<void> {
   let content = readFileSync(file, "utf-8");
 
   content = content
@@ -250,12 +251,43 @@ export function substituteAndEncrypt(
     )
     .join("\n");
 
-  for (const [key, value] of Object.entries(vars)) {
-    content = content.replaceAll(`\${${key}}`, value);
+  content = renderSecretTemplate(content, vars);
+
+  const unresolved = [...new Set(content.match(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g) ?? [])];
+  if (unresolved.length > 0) {
+    throw new Error(
+      `Unresolved placeholders in ${file}: ${unresolved.join(", ")}. ` +
+        "Flux strict post-build substitution would reject this manifest.",
+    );
   }
 
   writeFileSync(file, content);
-  encryptFile(file, cfg, repoRoot);
+  if (!(await encryptFile(file, cfg, repoRoot))) {
+    rmSync(file, { force: true });
+    throw new Error(`SOPS encryption failed for ${file}; plaintext secret removed`);
+  }
+}
+
+/**
+ * Whole-value placeholders (`key: ${VAR}` / `key: "${VAR}"`) are emitted as JSON-quoted
+ * scalars so empty or special-character values stay valid YAML strings.
+ */
+export function renderSecretTemplate(content: string, vars: Record<string, string>): string {
+  for (const [key, value] of Object.entries(vars)) {
+    const placeholder = `\${${key}}`;
+    const wholeValue = new RegExp(
+      `^(\\s*[^\\s:#][^:#]*:[ \\t]+)(["']?)${escapeRegExp(placeholder)}\\2[ \\t]*$`,
+      "gm",
+    );
+    content = content
+      .replace(wholeValue, (_m, prefix: string) => `${prefix}${JSON.stringify(value)}`)
+      .replaceAll(placeholder, () => value);
+  }
+  return content;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ---------------------------------------------------------------------------

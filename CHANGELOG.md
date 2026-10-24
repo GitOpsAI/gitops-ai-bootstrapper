@@ -2,6 +2,19 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.3.1
+
+### Changed
+
+- **Secret generation** — secrets of every selected component are now always rendered and SOPS-encrypted; missing Cloudflare/OpenAI credentials render as empty strings with a warning, and bootstrap fails fast if any `${VAR}` placeholder remains.
+- **OpenClaw gateway token** — a random 256-bit gateway token is generated when none is provided instead of leaving the gateway without an auth token.
+
+### Fixed
+
+- **Flux 2.9 strict post-build substitution** — kustomize-controller v1.9 enables `StrictPostBuildSubstitutions` by default, so committed secret templates with unresolved `${VAR}` placeholders broke the `cluster-components` Kustomization.
+- **Secret rendering** — whole-value placeholders are emitted as quoted YAML strings (empty or special-character values no longer become `null` or invalid YAML), and `$` sequences in values are no longer interpreted as replacement patterns.
+- **SOPS failure handling** — a failed encryption now aborts bootstrap and deletes the plaintext file instead of leaving it to be committed.
+
 ## 1.3.0
 
 ### Added
