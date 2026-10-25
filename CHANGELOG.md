@@ -4,37 +4,30 @@ All notable changes to the **gitops-ai** bootstrapper CLI are documented here. V
 
 ## 1.3.2
 
-Includes everything from 1.3.1, which was unpublished from npm.
+Replaces 1.3.1, which was unpublished from npm.
 
 ### Added
 
-- **Cloudflare Tunnel network mode**: publish the cluster without a public IP.
-  - Adds the opt-in `cloudflare-tunnel` component and one proxied `*.<domain>` CNAME instead of External DNS.
-  - A one-time setup token (never saved) creates or reuses the tunnel `gitops-ai-<cluster>` and a Cloudflare Access app for `*.<domain>`. Access is created before DNS points at the tunnel.
-  - Tunnel credentials are SOPS-encrypted; cloudflared also validates the Access JWT.
-  - The Gateway allowlist is narrowed to the pod CIDR `10.42.0.0/16`.
-- **GitHub Codespaces support** (detected via `CODESPACES=true`):
-  - k3d instead of k3s, no browser logins, repo taken from `GITHUB_REPOSITORY`.
-  - Tokens pre-filled from Codespaces secrets: `GITOPS_GIT_TOKEN`, `GITOPS_FLUX_GIT_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_SETUP_TOKEN`.
-  - Cloudflare Tunnel is the default network mode; the final steps explain how to keep the age key as a Codespaces secret.
-- **Cloudflare pre-flight check**: before anything is created, read-only API calls verify the zone, Zero Trust and every token permission. Each problem names what is missing; you can retry, enter a new token or exit.
-- **Let's Encrypt staging**: optional under *Additional settings*.
-- **Unit tests**: `npm run test:unit` (platform detection, components, cloudflared config, Cloudflare flow on a mocked API, workload exec).
+- **Cloudflare Tunnel mode**: public access without a public IP. One wildcard DNS record, every app behind Cloudflare Access, tunnel credentials SOPS-encrypted.
+- **GitHub Codespaces**: detected automatically. Runs k3d, uses Tunnel mode and reads tokens from [Codespaces secrets](docs/bootstrap.md).
+- **Cloudflare pre-flight check**: the zone, Zero Trust and token permissions are verified before anything is created.
+- **Let's Encrypt staging** option under *Additional settings*.
+- **Unit tests**: `npm run test:unit`, also run in CI.
 
 ### Changed
 
-- **Secrets are always generated**: every selected component's secrets are rendered and SOPS-encrypted. Missing Cloudflare or OpenAI credentials become empty strings with a warning; bootstrap stops if any `${VAR}` placeholder is left.
-- **OpenClaw gateway token**: a random 256-bit token is generated when none is given, so the gateway is never left without auth.
-- Integration and template-upgrade tests skip `cloudflare-tunnel` (it needs a real Cloudflare account).
+- Secrets of every selected component are always generated and encrypted; missing credentials only warn.
+- OpenClaw gets a random gateway token when none is given.
+- npm releases use trusted publishing (OIDC) instead of a stored npm token.
 
 ### Fixed
 
-- **`cluster-components` broke on Flux 2.9**, which enables strict post-build substitution: unresolved `${VAR}` placeholders in secret templates are no longer committed.
-- **Secret rendering**: placeholders are written as quoted YAML strings, so empty or special-character values no longer turn into `null` or invalid YAML; `$` in values is kept as is.
-- **SOPS failure**: bootstrap now stops and deletes the plaintext file instead of leaving it to be committed.
-- **`openclaw-codex-login` and `openclaw-pair` failed with 404** after the OpenClaw operator migration. They now target `StatefulSet openclaw-instance/openclaw-instance`, container `openclaw`, and print how to check a missing workload.
-- **Codex login rejected on OpenClaw 2026.10** (`openai-codex` is a legacy provider id). It now runs `openclaw models auth login --provider openai --device-code`, which can be approved from any device; the browser callback to `localhost:1455` can't reach a pod.
-- **CLI did not exit after interactive exec** (`openclaw-codex-login`, `pod-console`). The exec WebSocket and stdin listeners are now cleaned up when the session ends.
+- Bootstrap broke on Flux 2.9 because of unresolved `${VAR}` placeholders in secrets.
+- Empty or special-character secret values produced invalid YAML.
+- A failed SOPS encryption could leave a plaintext secret to be committed.
+- `openclaw-codex-login` and `openclaw-pair` failed with 404 after the OpenClaw operator migration.
+- Codex login was rejected on OpenClaw 2026.10; it now uses the `openai` provider with a device code.
+- The CLI hung after interactive sessions (`openclaw-codex-login`, `pod-console`).
 
 ## 1.3.0
 
