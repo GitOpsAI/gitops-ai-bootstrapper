@@ -20,6 +20,7 @@ All notable changes to the **gitops-ai** bootstrapper CLI are documented here. V
 
 - **`openclaw-codex-login` / `openclaw-pair` after the OpenClaw operator migration** — they looked for `Deployment openclaw/openclaw` (container `main`, `node dist/index.js`) and failed with a raw 404. They now exec into the operator's `StatefulSet openclaw-instance/openclaw-instance`, container `openclaw`, using the `openclaw` CLI, and report a missing workload with the commands to check it.
 - **`openclaw-codex-login` with OpenClaw 2026.10** — `--provider openai-codex` is rejected as a legacy id. The login now runs `openclaw models auth login --provider openai --device-code`: the browser flow's `localhost:1455` callback is unreachable inside a pod, while the device code can be approved from any device.
+- **CLI hung after interactive exec** (`openclaw-codex-login`, `pod-console` commands) — the Kubernetes exec client leaves its stdin listeners attached, so a flowing stdin kept Node alive. The exec WebSocket is now closed and the session's stdin listeners removed when the command ends.
 
 ## 1.3.1
 

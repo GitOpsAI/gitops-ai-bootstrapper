@@ -30,22 +30,30 @@ function sleep(ms: number): Promise<void> {
  */
 function prepareStdinForInteractiveExec(useTty: boolean): () => void {
   const stdin = process.stdin;
-  if (typeof stdin.isPaused === "function" && stdin.isPaused()) {
-    stdin.resume();
-  }
-  if (!useTty || !stdin.isTTY) {
-    return () => {};
-  }
+  const wasPaused = typeof stdin.isPaused === "function" && stdin.isPaused();
+  // The exec client adds its own stdin listeners and never removes them; a flowing
+  // stdin with listeners keeps the event loop (and the CLI) alive after the command ends.
+  const listenersBefore = {
+    data: new Set(stdin.listeners("data")),
+    end: new Set(stdin.listeners("end")),
+  };
+  if (wasPaused) stdin.resume();
+
   const rs = stdin as tty.ReadStream;
-  if (typeof rs.setRawMode !== "function") {
-    return () => {};
-  }
-  const previousRaw = rs.isRaw;
-  rs.setRawMode(true);
+  const canRaw = useTty && stdin.isTTY && typeof rs.setRawMode === "function";
+  const previousRaw = canRaw ? rs.isRaw : false;
+  if (canRaw) rs.setRawMode(true);
+
   return () => {
-    if (stdin.isTTY && typeof rs.setRawMode === "function") {
-      rs.setRawMode(previousRaw);
+    if (canRaw && stdin.isTTY) rs.setRawMode(previousRaw);
+    for (const event of ["data", "end"] as const) {
+      for (const listener of stdin.listeners(event)) {
+        if (!listenersBefore[event].has(listener)) {
+          stdin.removeListener(event, listener as (...args: unknown[]) => void);
+        }
+      }
     }
+    if (wasPaused || stdin.listenerCount("data") === 0) stdin.pause();
   };
 }
 
@@ -427,6 +435,7 @@ export async function execInteractiveAttach(
   const execApi = new k8s.Exec(kc);
   let exitCode = 0;
   let k8sStatus: V1Status | undefined;
+  let socket: { close(): void } | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       execApi
@@ -445,9 +454,13 @@ export async function execInteractiveAttach(
             resolve();
           },
         )
+        .then((ws) => {
+          socket = ws;
+        })
         .catch(reject);
     });
   } finally {
+    socket?.close();
     restoreStdin();
   }
   return { exitCode, k8sStatus };

@@ -118,7 +118,9 @@ export async function openclawCodexLogin(): Promise<void> {
     pc.dim(
       `Verify: ${pc.cyan(
         `kubectl exec -n ${WORKLOAD.namespace} ${WORKLOAD.name}-0 -c ${k8sApi.OPENCLAW_K8S_CONTAINER_NAME} -- openclaw models auth list --provider openai`,
-      )}. ` + "If models still fail, select an openai/* model (e.g. openai/gpt-6-astra) in the OpenClaw UI.",
+      )}. ` +
+        "The default model is managed in Git (agents.defaults.model.primary in templates/ai/openclaw-instance); " +
+        "change it there, since the operator merges that config into the pod.",
     ),
   );
 }
