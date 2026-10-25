@@ -19,13 +19,17 @@ const EMAIL_DOMAIN_RE = /^@[a-z0-9.-]+\.[a-z]{2,}$/i;
 
 export type FetchFn = typeof fetch;
 
-export const CLOUDFLARE_SETUP_TOKEN_PERMISSIONS = [
-  "Account → Cloudflare Tunnel: Edit",
-  "Account → Access: Apps and Policies: Edit",
-  "Account → Access: Organizations, Identity Providers, and Groups: Read",
-  "Zone → Zone: Read",
-  "Zone → DNS: Edit",
-];
+const PERMISSION = {
+  tunnel: "Account → Cloudflare Tunnel: Edit",
+  accessApps: "Account → Access: Apps and Policies: Edit",
+  accessOrg: "Account → Access: Organizations, Identity Providers, and Groups: Read",
+  zone: "Zone → Zone: Read",
+  dns: "Zone → DNS: Edit",
+} as const;
+
+export const CLOUDFLARE_SETUP_TOKEN_PERMISSIONS: string[] = Object.values(PERMISSION);
+
+export const ZERO_TRUST_DASHBOARD_URL = "https://one.dash.cloudflare.com";
 
 export class CloudflareApiError extends Error {
   constructor(
@@ -107,15 +111,23 @@ function client(token: string, fetchFn: FetchFn) {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    const res = await fetchFn(`${API_BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    let res: Response;
+    try {
+      res = await fetchFn(`${API_BASE}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new CloudflareApiError(
+        `Cannot reach the Cloudflare API (${method} ${path.split("?")[0]}): ${(err as Error).message}`,
+        0,
+      );
+    }
 
     let payload: CfEnvelope<T> | undefined;
     try {
@@ -212,6 +224,30 @@ async function resolveZone(request: Request, domain: string): Promise<CfZone> {
   );
 }
 
+function isPermissionError(err: unknown): err is CloudflareApiError {
+  return err instanceof CloudflareApiError && (err.status === 401 || err.status === 403);
+}
+
+/** Code 9109 is also used for "Unauthorized to access requested resource", so match the text. */
+const INVALID_TOKEN_RE = /invalid (access|api) token|invalid request headers|invalid format for authorization/i;
+
+function permissionProblem(err: unknown, permission: string): string {
+  if (err instanceof CloudflareApiError && INVALID_TOKEN_RE.test(err.message)) {
+    return `The setup token is invalid, expired or revoked; copy the full token value.\n${err.message}`;
+  }
+  return isPermissionError(err)
+    ? `The setup token is missing "${permission}".\n${err.message}`
+    : (err as Error).message;
+}
+
+function subZoneWarning(zone: CfZone, clusterDomain: string): string | undefined {
+  if (zone.name.toLowerCase() === clusterDomain.toLowerCase()) return undefined;
+  return (
+    `${clusterDomain} is a subdomain of zone ${zone.name}. Cloudflare Universal SSL only covers ` +
+    `*.${zone.name}, so *.${clusterDomain} needs an Advanced Certificate (paid) or the zone apex as cluster domain.`
+  );
+}
+
 async function resolveAccessTeam(request: Request, accountId: string): Promise<string> {
   let org: CfAccessOrganization;
   try {
@@ -220,11 +256,13 @@ async function resolveAccessTeam(request: Request, accountId: string): Promise<s
       `/accounts/${accountId}/access/organizations`,
     );
   } catch (err) {
-    throw new Error(
-      "Cloudflare Zero Trust is not set up for this account (or the token lacks Access read). " +
-        "Open https://one.dash.cloudflare.com, pick a team name and the Free plan, then re-run bootstrap.\n" +
-        (err as Error).message,
-    );
+    if (err instanceof CloudflareApiError && /not_enabled|not_found/i.test(err.message)) {
+      throw new Error(
+        `Cloudflare Zero Trust is not enabled for this account. Enable it once at ${ZERO_TRUST_DASHBOARD_URL}: ` +
+          "choose a team name and the Free plan (Cloudflare may ask for a payment method; the Free plan is not charged).",
+      );
+    }
+    throw new Error(permissionProblem(err, PERMISSION.accessOrg));
   }
   const team = org.auth_domain?.replace(/\.cloudflareaccess\.com$/i, "");
   if (!team) throw new Error("Cloudflare Zero Trust organization has no team domain");
@@ -339,6 +377,64 @@ async function ensureAccessApp(
   return app.aud;
 }
 
+export interface TunnelPreflightResult {
+  zoneName?: string;
+  accessTeam?: string;
+  /** Blocking: bootstrap would fail on these. */
+  problems: string[];
+  warnings: string[];
+}
+
+/**
+ * Read-only checks for everything `provisionCloudflareTunnel` needs: an active zone,
+ * Zero Trust enabled, and read access with each token permission (GET cannot prove
+ * Edit, but catches missing or mis-scoped permissions before bootstrap changes anything).
+ */
+export async function preflightCloudflareTunnel(input: {
+  apiToken: string;
+  clusterDomain: string;
+  fetchFn?: FetchFn;
+}): Promise<TunnelPreflightResult> {
+  const request = client(input.apiToken, input.fetchFn ?? fetch);
+  const problems: string[] = [];
+  const warnings: string[] = [];
+
+  let zone: CfZone;
+  try {
+    zone = await resolveZone(request, input.clusterDomain);
+  } catch (err) {
+    return { problems: [permissionProblem(err, PERMISSION.zone)], warnings };
+  }
+  const accountId = zone.account.id;
+
+  const subZone = subZoneWarning(zone, input.clusterDomain);
+  if (subZone) warnings.push(subZone);
+
+  let accessTeam: string | undefined;
+  try {
+    accessTeam = await resolveAccessTeam(request, accountId);
+  } catch (err) {
+    problems.push((err as Error).message);
+  }
+
+  const checks: [string, string][] = [
+    [`/accounts/${accountId}/cfd_tunnel?${new URLSearchParams({ per_page: "1" })}`, PERMISSION.tunnel],
+    [`/zones/${zone.id}/dns_records?${new URLSearchParams({ per_page: "1" })}`, PERMISSION.dns],
+  ];
+  if (accessTeam) {
+    checks.push([`/accounts/${accountId}/access/apps`, PERMISSION.accessApps]);
+  }
+  for (const [path, permission] of checks) {
+    try {
+      await request("GET", path);
+    } catch (err) {
+      problems.push(permissionProblem(err, permission));
+    }
+  }
+
+  return { zoneName: zone.name, accessTeam, problems, warnings };
+}
+
 /**
  * Idempotent: reuses the tunnel named `gitops-ai-<cluster>` and the Access app for
  * `*.<domain>`, and re-derives credentials from the tunnel token on every run.
@@ -358,12 +454,8 @@ export async function provisionCloudflareTunnel(
   const zone = await resolveZone(request, input.clusterDomain);
   const accountId = zone.account.id;
 
-  if (zone.name.toLowerCase() !== input.clusterDomain.toLowerCase()) {
-    warnings.push(
-      `${input.clusterDomain} is a subdomain of zone ${zone.name}. Cloudflare Universal SSL only covers ` +
-        `*.${zone.name}, so *.${input.clusterDomain} needs an Advanced Certificate (paid) or the zone apex as cluster domain.`,
-    );
-  }
+  const subZone = subZoneWarning(zone, input.clusterDomain);
+  if (subZone) warnings.push(subZone);
 
   const accessTeam = await resolveAccessTeam(request, accountId);
   const { tunnel, created } = await ensureTunnel(request, accountId, tunnelName);

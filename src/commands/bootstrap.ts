@@ -55,8 +55,10 @@ import {
 import { loginAndCreateCloudflareToken } from "../core/cloudflare-oauth.js";
 import {
   CLOUDFLARE_SETUP_TOKEN_PERMISSIONS,
+  ZERO_TRUST_DASHBOARD_URL,
   accessAllowedInputError,
   parseAccessAllowed,
+  preflightCloudflareTunnel,
 } from "../core/cloudflare-tunnel.js";
 
 // ---------------------------------------------------------------------------
@@ -171,6 +173,52 @@ function codespaceRepository(): { owner: string; name: string; path: string } | 
   if (!owner || !name) return undefined;
   const checkout = `/workspaces/${name}`;
   return { owner, name, path: existsSync(checkout) ? checkout : process.cwd() };
+}
+
+/** Blocks until the Cloudflare account can host the tunnel; nothing is created before this passes. */
+async function ensureCloudflareTunnelReady(state: WizardState): Promise<string> {
+  let token = state.cloudflareSetupToken;
+  for (;;) {
+    const s = p.spinner();
+    s.start("Checking Cloudflare account (read-only)");
+    const result = await preflightCloudflareTunnel({
+      apiToken: token,
+      clusterDomain: state.clusterDomain,
+    });
+
+    if (result.problems.length === 0) {
+      s.stop(pc.green(`Cloudflare ready: zone ${result.zoneName}, Zero Trust team ${result.accessTeam}`));
+      for (const w of result.warnings) log.warn(w);
+      return token;
+    }
+
+    s.stop(pc.red("Cloudflare is not ready for the tunnel"));
+    for (const w of result.warnings) log.warn(w);
+    p.note(
+      result.problems.map((m) => `${pc.red("✗")} ${m}`).join("\n\n"),
+      "Fix in the Cloudflare dashboard",
+    );
+    const next = await p.select({
+      message: pc.bold("Nothing has been created yet. How would you like to proceed?"),
+      options: [
+        { value: "retry", label: "Retry the check", hint: "after fixing it in the dashboard" },
+        { value: "token", label: "Enter a different setup token" },
+        { value: "exit", label: "Exit", hint: "answers are saved for the next run" },
+      ],
+    });
+    if (p.isCancel(next) || next === "exit") {
+      log.error("Aborted before any changes.");
+      return process.exit(1) as never;
+    }
+    if (next === "token") {
+      const v = await p.password({
+        message: pc.bold("Cloudflare setup token"),
+        validate: (v) => { if (!v) return "Required"; },
+      });
+      if (p.isCancel(v)) handleCancel();
+      token = v as string;
+    }
+  }
 }
 
 // fetchTemplateTags is imported from core/template-sync.ts
@@ -1022,14 +1070,15 @@ function buildFields(
       skip: (state) => !!state.cloudflareSetupToken,
       run: async (state) => {
         p.note(
-          `${pc.bold("Create a separate, short-lived token for the one-time setup:")}\n` +
-            `  ${pc.cyan("https://dash.cloudflare.com/profile/api-tokens")} → Create Custom Token\n\n` +
+          `${pc.bold("1. Enable Cloudflare Zero Trust")} ${pc.yellow("(required, once per account)")}\n` +
+            `  ${pc.cyan(ZERO_TRUST_DASHBOARD_URL)} → choose a team name → Free plan\n\n` +
+            `${pc.bold("2. Create a separate, short-lived setup token")}\n` +
+            `  ${pc.cyan("https://dash.cloudflare.com/profile/api-tokens")} → Create Custom Token\n` +
             CLOUDFLARE_SETUP_TOKEN_PERMISSIONS.map((perm) => `  ${pc.cyan(perm)}`).join("\n") +
             "\n\n" +
-            pc.dim("Used only from this machine to create the tunnel, the wildcard DNS record and the\n") +
-            pc.dim("Access application. It is never committed or stored in the cluster: revoke it afterwards.\n") +
-            pc.dim("Zero Trust must be enabled once (Free plan): https://one.dash.cloudflare.com"),
-          "Cloudflare setup token",
+            pc.dim("Both are checked (read-only) before bootstrap creates anything. The token is used only\n") +
+            pc.dim("from this machine and never committed or stored in the cluster: revoke it afterwards."),
+          "Cloudflare Tunnel prerequisites",
         );
         const v = await p.password({
           message: pc.bold("Cloudflare setup token"),
@@ -1503,6 +1552,10 @@ export async function bootstrap(): Promise<void> {
     selectedComponents: wizard.selectedComponents.join(","),
   });
   log.success("Configuration saved");
+
+  if (tunnelEnabled(wizard)) {
+    wizard.cloudflareSetupToken = await ensureCloudflareTunnelReady(wizard);
+  }
 
   // ── CLI tools: explain + confirm + install only when something is missing ──
   const toolDescriptions: [string, string][] = [

@@ -10,6 +10,7 @@ import {
   CloudflareApiError,
   credentialsFromTunnelToken,
   parseAccessAllowed,
+  preflightCloudflareTunnel,
   provisionCloudflareTunnel,
   tunnelNameForCluster,
   zoneCandidates,
@@ -49,6 +50,8 @@ interface Call {
 interface MockState {
   zones: { id: string; name: string; account: { id: string } }[];
   accessOrg: { auth_domain: string } | null;
+  /** Path prefixes answered with 403, as for a token without that permission. */
+  denied?: string[];
   tunnels: { id: string; name: string }[];
   accessApps: { id: string; name: string; domain: string; aud: string }[];
   dnsRecords: { id: string; type: string; name: string; content: string }[];
@@ -85,11 +88,19 @@ function mockCloudflare(state: MockState) {
     const acct = `/accounts/${ACCOUNT_ID}`;
     const route = `${method} ${path}`;
 
+    if (state.denied?.some((prefix) => path.startsWith(prefix))) {
+      return fail(403, 10000, "Authentication error");
+    }
     if (route === "GET /zones") {
       return ok(state.zones.filter((z) => z.name === url.searchParams.get("name")));
     }
     if (route === `GET ${acct}/access/organizations`) {
-      return state.accessOrg ? ok(state.accessOrg) : fail(404, 9999, "access.api.error.not_found");
+      return state.accessOrg
+        ? ok(state.accessOrg)
+        : fail(400, 9999, "access.api.error.not_enabled: Access is not enabled.");
+    }
+    if (method === "GET" && path.startsWith(`${acct}/access/`) && !state.accessOrg) {
+      return fail(400, 9999, "access.api.error.not_enabled: Access is not enabled.");
     }
     if (route === `GET ${acct}/cfd_tunnel`) {
       return ok(state.tunnels.filter((t) => t.name === url.searchParams.get("name")));
@@ -296,7 +307,7 @@ describe("provisionCloudflareTunnel", () => {
     state.accessOrg = null;
     const { fetchFn, calls } = mockCloudflare(state);
 
-    await assert.rejects(provisionCloudflareTunnel({ ...baseInput, fetchFn }), /Zero Trust is not set up/);
+    await assert.rejects(provisionCloudflareTunnel({ ...baseInput, fetchFn }), /Zero Trust is not enabled.*one\.dash\.cloudflare\.com/);
     assert.ok(!calls.some((c) => c.method !== "GET"));
   });
 
@@ -324,6 +335,108 @@ describe("provisionCloudflareTunnel", () => {
       assert.doesNotMatch(err.message, /\?/);
       return true;
     });
+  });
+});
+
+describe("preflightCloudflareTunnel", () => {
+  const preflightInput = { apiToken: "setup-token", clusterDomain: "example.com" };
+
+  it("passes on a ready account using only GET requests", async () => {
+    const { fetchFn, calls } = mockCloudflare(defaultState());
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+
+    assert.deepEqual(result, { zoneName: "example.com", accessTeam: "myteam", problems: [], warnings: [] });
+    assert.ok(calls.length > 0 && calls.every((c) => c.method === "GET"));
+    assert.ok(calls.some((c) => c.path.endsWith("/cfd_tunnel")));
+    assert.ok(calls.some((c) => c.path.endsWith("/access/apps")));
+    assert.ok(calls.some((c) => c.path.endsWith("/dns_records")));
+  });
+
+  it("reports a disabled Zero Trust with the dashboard link", async () => {
+    const state = defaultState();
+    state.accessOrg = null;
+    const { fetchFn, calls } = mockCloudflare(state);
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+
+    assert.equal(result.problems.length, 1);
+    assert.match(result.problems[0], /Zero Trust is not enabled.*one\.dash\.cloudflare\.com.*Free plan/);
+    assert.ok(!calls.some((c) => c.path.endsWith("/access/apps")));
+  });
+
+  it("names every missing token permission", async () => {
+    const state = defaultState();
+    state.denied = [`/zones/${ZONE_ID}/dns_records`, `/accounts/${ACCOUNT_ID}/cfd_tunnel`];
+    const { fetchFn } = mockCloudflare(state);
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+
+    assert.equal(result.problems.length, 2);
+    assert.match(result.problems.join("\n"), /missing "Account → Cloudflare Tunnel: Edit"/);
+    assert.match(result.problems.join("\n"), /missing "Zone → DNS: Edit"/);
+  });
+
+  it("reports a missing Access organization read permission", async () => {
+    const state = defaultState();
+    state.denied = [`/accounts/${ACCOUNT_ID}/access/organizations`];
+    const { fetchFn } = mockCloudflare(state);
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+
+    assert.match(result.problems.join("\n"), /missing "Account → Access: Organizations, Identity Providers, and Groups: Read"/);
+  });
+
+  it("stops at the zone when it cannot be found or read", async () => {
+    const missing = defaultState();
+    missing.zones = [];
+    let result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn: mockCloudflare(missing).fetchFn });
+    assert.equal(result.problems.length, 1);
+    assert.match(result.problems[0], /No active Cloudflare zone/);
+
+    const denied = defaultState();
+    denied.denied = ["/zones"];
+    result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn: mockCloudflare(denied).fetchFn });
+    assert.deepEqual(result.problems.length, 1);
+    assert.match(result.problems[0], /missing "Zone → Zone: Read"/);
+  });
+
+  it("keeps the sub-zone certificate warning non-blocking", async () => {
+    const { fetchFn } = mockCloudflare(defaultState());
+    const result = await preflightCloudflareTunnel({ apiToken: "t", clusterDomain: "lab.example.com", fetchFn });
+    assert.deepEqual(result.problems, []);
+    assert.match(result.warnings[0], /Universal SSL/);
+  });
+
+  it("tells an invalid token apart from a missing permission", async () => {
+    const fetchFn: FetchFn = async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ code: 9109, message: "Invalid access token" }] }), {
+        status: 403,
+      });
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+    assert.equal(result.problems.length, 1);
+    assert.match(result.problems[0], /invalid, expired or revoked/);
+    assert.doesNotMatch(result.problems[0], /missing/);
+  });
+
+  it("treats 9109 Unauthorized on a valid token as a missing permission", async () => {
+    const state = defaultState();
+    const { fetchFn: base } = mockCloudflare(state);
+    const fetchFn: FetchFn = async (input, init) =>
+      String(input).includes("/dns_records")
+        ? new Response(
+            JSON.stringify({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }] }),
+            { status: 403 },
+          )
+        : base(input, init);
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+    assert.equal(result.problems.length, 1);
+    assert.match(result.problems[0], /missing "Zone → DNS: Edit"/);
+  });
+
+  it("turns network failures into a problem instead of throwing", async () => {
+    const fetchFn: FetchFn = async () => {
+      throw new TypeError("fetch failed");
+    };
+    const result = await preflightCloudflareTunnel({ ...preflightInput, fetchFn });
+    assert.equal(result.problems.length, 1);
+    assert.match(result.problems[0], /Cannot reach the Cloudflare API.*fetch failed/);
   });
 });
 

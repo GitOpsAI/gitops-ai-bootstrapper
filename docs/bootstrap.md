@@ -97,7 +97,11 @@ Offered when DNS & TLS is enabled; the default in GitHub Codespaces. Nothing lis
 1. **Cloudflare setup token** -- a separate one-time token (Tunnel, Access and DNS edit, see [Prerequisites](prerequisites.md)). It is not saved in the install plan, the repo or the cluster.
 2. **Access allowed** -- comma-separated emails or `@domain` entries that may sign in (default: the Let's Encrypt email). Login is by one-time PIN unless you add an identity provider in Zero Trust.
 
-The wizard then sets the ingress allowlist to the k3d/k3s pod CIDR `10.42.0.0/16` and replaces **External DNS** with the **Cloudflare Tunnel** component. During bootstrap the CLI (idempotently, safe to re-run):
+The wizard then sets the ingress allowlist to the k3d/k3s pod CIDR `10.42.0.0/16` and replaces **External DNS** with the **Cloudflare Tunnel** component.
+
+Right after you confirm, and before any repo, cluster, key or secret is created, the CLI runs a **read-only pre-flight check**: the zone exists and is active, Zero Trust is enabled, and the setup token can read tunnels, Access apps and DNS records. Any problem is listed with the missing permission or the dashboard link; you can retry after fixing it, enter another token, or exit with your answers saved.
+
+During bootstrap the CLI (idempotently, safe to re-run):
 
 - creates or reuses the locally-managed tunnel `gitops-ai-<cluster>` and derives its credentials from the tunnel token,
 - creates or updates the Access application for `*.<domain>` (before any DNS points at the tunnel),
