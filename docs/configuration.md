@@ -14,7 +14,27 @@ These values are collected during the wizard and rendered into `clusters/<name>/
 | `LETSENCRYPT_EMAIL`         | Email for Let's Encrypt certificate issuance notifications                             | (none)          | `admin@example.com`         |
 | `INGRESS_NGINX_ALLOWED_IPS` | Comma-separated CIDR ranges allowed to access the ingress controller                   | `0.0.0.0/0`     | `10.0.0.0/8,192.168.1.0/24` |
 
+Optional keys, added to `cluster-sync.yaml` only when needed:
+
+| Key                  | Description                                                     | Default                                          |
+|----------------------|-----------------------------------------------------------------|--------------------------------------------------|
+| `letsencrypt_server` | ACME directory used by both cert-manager `ClusterIssuer`s       | `https://acme-v02.api.letsencrypt.org/directory` |
+
+In Cloudflare Tunnel mode the wizard sets `CLUSTER_PUBLIC_IP` to `127.0.0.1` (no records point at it) and `INGRESS_NGINX_ALLOWED_IPS` to the pod CIDR `10.42.0.0/16`, so only `cloudflared` and other in-cluster clients reach the Gateway.
+
 After bootstrap, you can change these by editing `clusters/<name>/cluster-sync.yaml` directly, committing, and pushing. Flux picks up the change on its next reconciliation cycle.
+
+## Environment Variables
+
+| Variable                 | Used when                   | Purpose                                                                         |
+|--------------------------|-----------------------------|---------------------------------------------------------------------------------|
+| `CODESPACES`             | `true` in GitHub Codespaces | k3d, no browser logins, repo from `GITHUB_REPOSITORY`, tunnel mode by default   |
+| `CI`                     | `true` in CI                | k3d, no browser logins                                                          |
+| `GITOPS_GIT_TOKEN`       | Codespaces / CI             | Pre-fills the Git provider token                                                |
+| `GITOPS_FLUX_GIT_TOKEN`  | Codespaces / CI             | Pre-fills a separate (read-only) token for Flux                                 |
+| `CLOUDFLARE_API_TOKEN`   | Codespaces / CI             | Pre-fills the DNS token stored for cert-manager                                 |
+| `CLOUDFLARE_SETUP_TOKEN` | Codespaces / CI             | Pre-fills the one-time tunnel/Access setup token (never stored)                 |
+| `SOPS_AGE_KEY`           | Codespaces                  | Written to `<keyDir>/age.agekey` by the devcontainer on start if the file is empty |
 
 ## SOPS Defaults
 
@@ -66,6 +86,12 @@ If a component was disabled during bootstrap and you want to add it later:
 3. Commit and push
 
 Flux will remove the component's resources from the cluster on reconciliation.
+
+### Cloudflare Tunnel
+
+`clusters/<name>/components/cloudflare-tunnel/` holds `cloudflared-config.yaml` (tunnel ID, Access team and AUD) and the SOPS-encrypted `secret-cloudflare-tunnel.yaml` with the tunnel credentials. Edits to the config change the generated ConfigMap name, so the `cloudflared` pods roll. Re-running the bootstrap reuses the existing tunnel and Access application and rewrites both files.
+
+The component is opt-in: it is not listed in `clusters/_template/components/kustomization.yaml`, so adding it by hand requires the wizard (or the same API calls) to create the tunnel first.
 
 ### Re-encrypting secrets
 

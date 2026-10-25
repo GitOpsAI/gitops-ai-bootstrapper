@@ -17,7 +17,7 @@ import {
 } from "../utils/log.js";
 import { saveInstallPlan, loadInstallPlan, clearInstallPlan } from "../utils/config.js";
 import { execAsync, exec, execSafe, commandExists } from "../utils/shell.js";
-import { isMacOS, isCI } from "../utils/platform.js";
+import { isMacOS, isCodespaces, isHeadless, useK3d } from "../utils/platform.js";
 import { ensureAll, ensureDockerDaemonReady } from "../core/dependencies.js";
 import { runBootstrap, stripTemplateGitHubDirectory } from "../core/bootstrap-runner.js";
 import * as k8s from "../core/kubernetes.js";
@@ -32,8 +32,10 @@ import {
   COMPONENTS,
   REQUIRED_COMPONENT_IDS,
   DNS_TLS_COMPONENT_IDS,
+  K3D_POD_CIDR,
   MONITORING_COMPONENT_IDS,
   OPTIONAL_COMPONENTS,
+  TUNNEL_COMPONENT_ID,
   SOURCE_TEMPLATE_HOST,
   SOURCE_PROJECT_PATH,
   type BootstrapConfig,
@@ -51,6 +53,11 @@ import {
   type WizardField,
 } from "../utils/wizard.js";
 import { loginAndCreateCloudflareToken } from "../core/cloudflare-oauth.js";
+import {
+  CLOUDFLARE_SETUP_TOKEN_PERMISSIONS,
+  accessAllowedInputError,
+  parseAccessAllowed,
+} from "../core/cloudflare-tunnel.js";
 
 // ---------------------------------------------------------------------------
 // Browser opener
@@ -70,6 +77,8 @@ const OPENAI_API_KEYS_URL = "https://platform.openai.com/api-keys";
 // ---------------------------------------------------------------------------
 // Wizard state
 // ---------------------------------------------------------------------------
+
+type NetworkMode = "public" | "local" | "tunnel";
 
 interface WizardState {
   gitProvider: ProviderType;
@@ -92,8 +101,36 @@ interface WizardState {
   openclawGatewayToken: string;
   ingressAllowedIps: string;
   clusterPublicIp: string;
+  networkMode: NetworkMode;
+  cloudflareSetupToken: string;
+  /** Comma-separated emails / @domains allowed through Cloudflare Access. */
+  cloudflareAccessAllowed: string;
+  letsencryptStaging: boolean;
   /** When true, show Git branch + template tag prompts; otherwise use main/main defaults. */
   enableAdditionalSettings: boolean;
+}
+
+function tunnelEnabled(state: WizardState): boolean {
+  return state.networkMode === "tunnel";
+}
+
+/**
+ * Tunnel mode replaces external-dns (one wildcard CNAME to the tunnel instead of
+ * per-host A records to a public IP) with the cloudflare-tunnel component.
+ */
+function applyNetworkModeComponents(
+  components: string[],
+  mode: NetworkMode,
+  dnsAndTls: boolean,
+): string[] {
+  const without = components.filter((id) => id !== TUNNEL_COMPONENT_ID);
+  if (mode === "tunnel") {
+    return [...without.filter((id) => id !== "external-dns"), TUNNEL_COMPONENT_ID];
+  }
+  if (dnsAndTls && !without.includes("external-dns")) {
+    return applyDnsTlsComponents(without, true);
+  }
+  return without;
 }
 
 function isNewRepo(state: WizardState): boolean {
@@ -126,6 +163,14 @@ function applyDnsTlsComponents(components: string[], enable: boolean): string[] 
   const required = REQUIRED_COMPONENT_IDS.filter((id) => without.includes(id));
   const rest = without.filter((id) => !REQUIRED_COMPONENT_IDS.includes(id));
   return [...required, ...DNS_TLS_COMPONENT_IDS, ...rest];
+}
+
+/** The repository a codespace was opened on (`GITHUB_REPOSITORY`, checkout under `/workspaces`). */
+function codespaceRepository(): { owner: string; name: string; path: string } | undefined {
+  const [owner, name] = (process.env.GITHUB_REPOSITORY ?? "").split("/", 2);
+  if (!owner || !name) return undefined;
+  const checkout = `/workspaces/${name}`;
+  return { owner, name, path: existsSync(checkout) ? checkout : process.cwd() };
 }
 
 // fetchTemplateTags is imported from core/template-sync.ts
@@ -239,7 +284,7 @@ function buildFields(
       run: async (state) => {
         const provider = await getProvider(state.gitProvider);
 
-        if (isCI()) {
+        if (isHeadless()) {
           const v = await p.password({
             message: pc.bold(provider.tokenLabel),
             validate: (v) => { if (!v) return "Required"; },
@@ -526,9 +571,13 @@ function buildFields(
           ...otherIds,
         ];
         // DNS/TLS components are added in the next step unless that step is skipped (saved plan).
-        const selectedComponents = saved(state, "manageDnsAndTls")
-          ? applyDnsTlsComponents(core, state.manageDnsAndTls)
-          : core;
+        const selectedComponents = applyNetworkModeComponents(
+          saved(state, "manageDnsAndTls")
+            ? applyDnsTlsComponents(core, state.manageDnsAndTls)
+            : core,
+          state.networkMode,
+          state.manageDnsAndTls,
+        );
 
         return {
           ...state,
@@ -555,20 +604,29 @@ function buildFields(
         });
         if (p.isCancel(v)) return back();
         const manageDnsAndTls = v as boolean;
+        if (!manageDnsAndTls && tunnelEnabled(state)) {
+          p.log.warn(
+            "Cloudflare Tunnel access needs automatic DNS & TLS. Change the Network section first to turn it off.",
+          );
+          return { ...state, manageDnsAndTls: true };
+        }
         return {
           ...state,
           manageDnsAndTls,
-          selectedComponents: applyDnsTlsComponents(
-            state.selectedComponents,
+          selectedComponents: applyNetworkModeComponents(
+            applyDnsTlsComponents(state.selectedComponents, manageDnsAndTls),
+            state.networkMode,
             manageDnsAndTls,
           ),
         };
       },
       review: (state) => [
         "Auto DNS & TLS",
-        state.manageDnsAndTls
-          ? "Yes — Cert Manager + External DNS (Cloudflare)"
-          : "No — manual DNS & certificates",
+        !state.manageDnsAndTls
+          ? "No — manual DNS & certificates"
+          : tunnelEnabled(state)
+            ? "Yes — Cert Manager + tunnel wildcard record (Cloudflare)"
+            : "Yes — Cert Manager + External DNS (Cloudflare)",
       ],
     },
 
@@ -617,7 +675,7 @@ function buildFields(
       hidden: (state) => !dnsAndTlsEnabled(state),
       skip: (state) => !!state.cloudflareApiToken,
       run: async (state) => {
-        if (isCI()) {
+        if (isHeadless()) {
           const v = await p.password({
             message: pc.bold("Cloudflare API Token (DNS zone edit access)"),
             validate: (v) => { if (!v) return "Required"; },
@@ -714,7 +772,7 @@ function buildFields(
       skip: (state) =>
         !!state.openaiApiKey && openclawAuthResolved(state) === "openai_api_key",
       run: async (state) => {
-        if (isCI()) {
+        if (isHeadless()) {
           if (openclawAuthResolved(state) === "openai_codex_oauth") {
             const openclawGatewayToken =
               state.openclawGatewayToken || exec("openssl rand -hex 32");
@@ -794,6 +852,7 @@ function buildFields(
       section: "Network",
       skip: (state) => saved(state, "ingressAllowedIps") && saved(state, "clusterPublicIp"),
       run: async (state) => {
+        const tunnelAvailable = dnsAndTlsEnabled(state);
         const mode = await p.select({
           message: pc.bold("How will you access the cluster?"),
           options: [
@@ -807,11 +866,42 @@ function buildFields(
               label: "Local only (localhost / LAN)",
               hint: "uses 127.0.0.1 or a private IP",
             },
+            ...(tunnelAvailable
+              ? [{
+                  value: "tunnel",
+                  label: "Cloudflare Tunnel (no public IP)",
+                  hint: isCodespaces()
+                    ? "recommended in Codespaces — outbound-only, Cloudflare Access login"
+                    : "outbound-only, Cloudflare Access login in front of every app",
+                }]
+              : []),
           ],
+          initialValue:
+            state.networkMode === "tunnel" && !tunnelAvailable ? "public" : state.networkMode,
         });
         if (p.isCancel(mode)) return back();
 
-        const m = mode as string;
+        const m = mode as NetworkMode;
+        const withMode = (patch: Pick<WizardState, "clusterPublicIp" | "ingressAllowedIps">): WizardState => ({
+          ...state,
+          ...patch,
+          networkMode: m,
+          selectedComponents: applyNetworkModeComponents(
+            state.selectedComponents,
+            m,
+            state.manageDnsAndTls,
+          ),
+        });
+
+        if (m === "tunnel") {
+          p.log.info(
+            pc.dim(
+              `The Gateway will only accept in-cluster clients (${K3D_POD_CIDR}); ` +
+                "public traffic arrives through cloudflared after Cloudflare Access login.",
+            ),
+          );
+          return withMode({ clusterPublicIp: "127.0.0.1", ingressAllowedIps: K3D_POD_CIDR });
+        }
 
         async function resolvePublicIp(): Promise<string> {
           if (detectedIp) return detectedIp;
@@ -856,7 +946,7 @@ function buildFields(
           if (p.isCancel(restriction)) return back();
 
           if (restriction === "open") {
-            return { ...state, clusterPublicIp: confirmIp as string, ingressAllowedIps: "0.0.0.0/0" };
+            return withMode({ clusterPublicIp: confirmIp as string, ingressAllowedIps: "0.0.0.0/0" });
           }
 
           const allowedCidrs = await p.text({
@@ -865,7 +955,7 @@ function buildFields(
             validate: (v) => { if (!v) return "At least one CIDR is required"; },
           });
           if (p.isCancel(allowedCidrs)) return back();
-          return { ...state, clusterPublicIp: confirmIp as string, ingressAllowedIps: allowedCidrs as string };
+          return withMode({ clusterPublicIp: confirmIp as string, ingressAllowedIps: allowedCidrs as string });
         }
 
         // local — detect LAN IPs from network interfaces
@@ -916,9 +1006,57 @@ function buildFields(
           placeholder: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
         });
         if (p.isCancel(allowedIps)) return back();
-        return { ...state, clusterPublicIp: localIp as string, ingressAllowedIps: allowedIps as string };
+        return withMode({ clusterPublicIp: localIp as string, ingressAllowedIps: allowedIps as string });
       },
-      review: (state) => ["Network", `${state.clusterPublicIp}  allowed: ${state.ingressAllowedIps}`],
+      review: (state) => [
+        "Network",
+        tunnelEnabled(state)
+          ? `Cloudflare Tunnel  gateway allowed: ${state.ingressAllowedIps}`
+          : `${state.clusterPublicIp}  allowed: ${state.ingressAllowedIps}`,
+      ],
+    },
+    {
+      id: "cloudflareSetupToken",
+      section: "Network",
+      hidden: (state) => !tunnelEnabled(state),
+      skip: (state) => !!state.cloudflareSetupToken,
+      run: async (state) => {
+        p.note(
+          `${pc.bold("Create a separate, short-lived token for the one-time setup:")}\n` +
+            `  ${pc.cyan("https://dash.cloudflare.com/profile/api-tokens")} → Create Custom Token\n\n` +
+            CLOUDFLARE_SETUP_TOKEN_PERMISSIONS.map((perm) => `  ${pc.cyan(perm)}`).join("\n") +
+            "\n\n" +
+            pc.dim("Used only from this machine to create the tunnel, the wildcard DNS record and the\n") +
+            pc.dim("Access application. It is never committed or stored in the cluster: revoke it afterwards.\n") +
+            pc.dim("Zero Trust must be enabled once (Free plan): https://one.dash.cloudflare.com"),
+          "Cloudflare setup token",
+        );
+        const v = await p.password({
+          message: pc.bold("Cloudflare setup token"),
+          validate: (v) => { if (!v) return "Required"; },
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, cloudflareSetupToken: v as string };
+      },
+      review: (state) => ["Cloudflare setup token", maskSecret(state.cloudflareSetupToken)],
+    },
+    {
+      id: "cloudflareAccessAllowed",
+      section: "Network",
+      hidden: (state) => !tunnelEnabled(state),
+      skip: (state) => saved(state, "cloudflareAccessAllowed"),
+      run: async (state) => {
+        const v = await p.text({
+          message:
+            pc.bold("Who may sign in through Cloudflare Access?") +
+            `\n${pc.dim("Comma-separated emails or @domain — login by one-time PIN unless you add an identity provider")}`,
+          initialValue: state.cloudflareAccessAllowed || state.letsencryptEmail || undefined,
+          validate: (v) => accessAllowedInputError(v ?? ""),
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, cloudflareAccessAllowed: parseAccessAllowed(v as string).join(",") };
+      },
+      review: (state) => ["Access allowed", state.cloudflareAccessAllowed],
     },
 
     // ── Additional settings (last — rarely needed) ─────────────────────────
@@ -1003,6 +1141,26 @@ function buildFields(
         return { ...state, templateTag: v as string };
       },
       review: (state) => ["Template tag", state.templateTag],
+    },
+    {
+      id: "letsencryptStaging",
+      section: "Additional settings",
+      hidden: (state) => !state.enableAdditionalSettings || !dnsAndTlsEnabled(state),
+      skip: () => hasSavedPlan && savedPlanRaw?.letsencryptStaging !== undefined,
+      run: async (state) => {
+        const v = await p.confirm({
+          message:
+            pc.bold("Use the Let's Encrypt staging issuer?") +
+            `\n${pc.dim("For frequent re-bootstraps (production allows 5 duplicate certificates per week); browsers will not trust it")}`,
+          initialValue: state.letsencryptStaging,
+        });
+        if (p.isCancel(v)) return back();
+        return { ...state, letsencryptStaging: v as boolean };
+      },
+      review: (state) => [
+        "Let's Encrypt",
+        state.letsencryptStaging ? pc.yellow("Staging (untrusted certificates)") : "Production",
+      ],
     },
   ];
 }
@@ -1263,23 +1421,39 @@ export async function bootstrap(): Promise<void> {
           prev.templateTag !== "" &&
           prev.templateTag !== "main")));
 
+  // Codespaces secrets (devcontainer.json `secrets`) arrive as env vars; only trusted when headless
+  // so a developer's unrelated shell variables are never picked up silently.
+  const headlessEnv = (name: string): string =>
+    isHeadless() ? (process.env[name]?.trim() ?? "") : "";
+  const codespaceRepo = isCodespaces() ? codespaceRepository() : undefined;
+
+  const savedNetworkMode = (["public", "local", "tunnel"] as const).find(
+    (m) => m === prev.networkMode,
+  );
+
   const initialState: WizardState = {
     gitProvider: (prev.gitProvider as ProviderType) ?? "github",
-    setupMode: (prev.setupMode as "new" | "existing") ?? "new",
+    setupMode: (prev.setupMode as "new" | "existing") ?? (codespaceRepo ? "existing" : "new"),
     manageDnsAndTls: savedDnsTls,
     selectedComponents: savedComponents,
     clusterName: clusterNameFromSavedPlan(prev.clusterName),
     clusterDomain: prev.clusterDomain ?? "homelab.click",
-    repoName: prev.repoName ?? "fluxcd_ai",
-    repoLocalPath: prev.repoLocalPath ?? "",
-    repoOwner: prev.repoOwner ?? "",
+    repoName: prev.repoName ?? codespaceRepo?.name ?? "fluxcd_ai",
+    repoLocalPath: prev.repoLocalPath ?? codespaceRepo?.path ?? "",
+    repoOwner: prev.repoOwner ?? codespaceRepo?.owner ?? "",
     enableAdditionalSettings: enableAdditionalFromPlan,
     repoBranch: prev.repoBranch ?? "main",
     templateTag: prev.templateTag ?? "",
     letsencryptEmail: prev.letsencryptEmail ?? "",
-    gitToken: prev.gitToken ?? "",
-    gitFluxToken: prev.gitFluxToken ?? "",
-    cloudflareApiToken: prev.cloudflareApiToken ?? "",
+    letsencryptStaging: prev.letsencryptStaging === "true",
+    gitToken: prev.gitToken || headlessEnv("GITOPS_GIT_TOKEN"),
+    gitFluxToken: prev.gitFluxToken || headlessEnv("GITOPS_FLUX_GIT_TOKEN"),
+    cloudflareApiToken: prev.cloudflareApiToken || headlessEnv("CLOUDFLARE_API_TOKEN"),
+    cloudflareSetupToken: headlessEnv("CLOUDFLARE_SETUP_TOKEN"),
+    cloudflareAccessAllowed: prev.cloudflareAccessAllowed ?? "",
+    networkMode:
+      savedNetworkMode ??
+      (saved ? "public" : isCodespaces() ? "tunnel" : "public"),
     openclawAuthMode: ((): OpenclawAuthMode => {
       if (
         prev.openclawAuthMode === "openai_codex_oauth" ||
@@ -1310,7 +1484,10 @@ export async function bootstrap(): Promise<void> {
     clusterDomain: wizard.clusterDomain,
     clusterPublicIp: wizard.clusterPublicIp,
     letsencryptEmail: wizard.letsencryptEmail,
+    letsencryptStaging: String(wizard.letsencryptStaging),
     ingressAllowedIps: wizard.ingressAllowedIps,
+    networkMode: wizard.networkMode,
+    cloudflareAccessAllowed: wizard.cloudflareAccessAllowed,
     gitToken: wizard.gitToken,
     gitFluxToken: wizard.gitFluxToken,
     repoName: wizard.repoName,
@@ -1340,7 +1517,7 @@ export async function bootstrap(): Promise<void> {
       "Docker-compatible runtime for k3d",
     ]);
   }
-  if (isMacOS() || isCI()) {
+  if (useK3d()) {
     toolDescriptions.push(["k3d", "Lightweight K3s in Docker (local cluster)"]);
   }
 
@@ -1421,6 +1598,7 @@ export async function bootstrap(): Promise<void> {
   // ── Build final config ───────────────────────────────────────────────
   const selectedComponents = wizard.selectedComponents;
   const isOpenclawEnabled = openclawEnabled(wizard);
+  const isTunnel = tunnelEnabled(wizard);
 
   const fullConfig: BootstrapConfig = {
     gitProvider: wizard.gitProvider,
@@ -1428,6 +1606,7 @@ export async function bootstrap(): Promise<void> {
     clusterDomain: wizard.clusterDomain,
     clusterPublicIp: wizard.clusterPublicIp,
     letsencryptEmail: wizard.letsencryptEmail,
+    letsencryptStaging: wizard.manageDnsAndTls && wizard.letsencryptStaging,
     ingressAllowedIps: wizard.ingressAllowedIps,
     gitToken: wizard.gitToken,
     gitFluxToken: wizard.gitFluxToken || undefined,
@@ -1435,6 +1614,10 @@ export async function bootstrap(): Promise<void> {
     repoOwner: wizard.repoOwner,
     repoBranch: wizard.repoBranch,
     cloudflareApiToken: wizard.cloudflareApiToken,
+    cloudflareSetupToken: isTunnel ? wizard.cloudflareSetupToken : undefined,
+    cloudflareAccessAllowed: isTunnel
+      ? parseAccessAllowed(wizard.cloudflareAccessAllowed)
+      : undefined,
     openclawAuthMode: isOpenclawEnabled
       ? openclawAuthResolved(wizard)
       : undefined,
@@ -1469,7 +1652,7 @@ export async function bootstrap(): Promise<void> {
   // ── /etc/hosts suggestion (local IP or no DNS management) ───────────
   const isLocalIp = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(fullConfig.clusterPublicIp)
     || fullConfig.clusterPublicIp === "localhost";
-  if (isLocalIp || !wizard.manageDnsAndTls) {
+  if (!isTunnel && (isLocalIp || !wizard.manageDnsAndTls)) {
     const hostsEntries = selectedComponents
       .map((id) => COMPONENTS.find((c) => c.id === id))
       .filter((c): c is ComponentDef => !!c?.subdomain)
@@ -1513,13 +1696,30 @@ export async function bootstrap(): Promise<void> {
   const summaryEntries: Record<string, string> = {
     Cluster: fullConfig.clusterName,
     Domain: fullConfig.clusterDomain,
-    "Public IP": fullConfig.clusterPublicIp,
+    ...(isTunnel
+      ? { Access: `Cloudflare Tunnel + Access (${wizard.cloudflareAccessAllowed})` }
+      : { "Public IP": fullConfig.clusterPublicIp }),
   };
   summary("Bootstrap Complete", summaryEntries);
 
   const finalSteps = [
     `All HelmReleases may take ${pc.yellow("~5 minutes")} to become ready.`,
   ];
+  if (isTunnel) {
+    finalSteps.push(
+      `Apps sit behind Cloudflare Access: sign in with ${pc.cyan(wizard.cloudflareAccessAllowed)} (one-time PIN by email).`,
+      `${pc.yellow("Revoke the Cloudflare setup token")} — it is no longer needed: ${pc.cyan("https://dash.cloudflare.com/profile/api-tokens")}`,
+    );
+  }
+  if (isCodespaces()) {
+    const repo = `${fullConfig.repoOwner}/${fullConfig.repoName}`;
+    finalSteps.push(
+      `Keep the age key outside this codespace (it is deleted with it): ${pc.cyan(
+        `gh secret set SOPS_AGE_KEY --user --repos ${repo} < ~/.sops/age.agekey`,
+      )}`,
+      `Raise the codespace idle timeout to 240 minutes so the cluster keeps serving: ${pc.cyan("https://github.com/settings/codespaces")}`,
+    );
+  }
   if (commandExists("kubectl")) {
     finalSteps.push(
       `Check HelmRelease status: ${pc.cyan("kubectl get helmreleases -A")}`,

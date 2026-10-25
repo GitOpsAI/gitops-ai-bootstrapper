@@ -24,7 +24,7 @@ macOS uses [k3d](https://k3d.io/) to run Kubernetes inside Docker. During `npx g
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | `brew install --cask docker`          |
 | [Colima](https://github.com/abiosoft/colima)                      | `brew install colima && colima start` |
 
-On **Linux**, the CLI installs [k3s](https://k3s.io/) natively -- no Docker required.
+On **Linux**, the CLI installs [k3s](https://k3s.io/) natively -- no Docker required. In **GitHub Codespaces** (`CODESPACES=true`) it uses k3d instead, because the codespace container has no systemd; the template's `.devcontainer` provides Docker-in-Docker and the pinned CLI tools.
 
 ### Git provider account
 
@@ -62,6 +62,21 @@ The wizard offers **browser login** that auto-creates a scoped Cloudflare DNS to
 
 The token is encrypted with SOPS/Age before being committed to Git.
 
+### Cloudflare Zero Trust and a setup token (Cloudflare Tunnel mode)
+
+**When:** you choose **Cloudflare Tunnel** as the network mode (the default in Codespaces).
+
+1. Enable [Cloudflare Zero Trust](https://one.dash.cloudflare.com) once: pick a team name and the **Free** plan (up to 50 users).
+2. Create a second, short-lived API token for the one-time setup with:
+   - `Account > Cloudflare Tunnel > Edit`
+   - `Account > Access: Apps and Policies > Edit`
+   - `Account > Access: Organizations, Identity Providers, and Groups > Read`
+   - `Zone > Zone > Read` and `Zone > DNS > Edit` on your domain
+
+The setup token is only used from your machine to create the tunnel, the proxied `*.<domain>` CNAME and the Access application. It is never committed or stored in the cluster; revoke it after bootstrap. The cluster keeps using the DNS-only token above for cert-manager.
+
+The cluster domain should be the zone apex (for example `example.com`, apps at `grafana.example.com`): Cloudflare Universal SSL covers one subdomain level only.
+
 ### OpenAI API key
 
 **When:** you select the OpenClaw component during the wizard.
@@ -83,3 +98,9 @@ The key is encrypted with SOPS/Age before being committed to Git.
 - No inbound ports required
 - The CLI offers to add entries to `/etc/hosts` for local name resolution
 - Services are accessible via the cluster IP on ports 80/443
+
+### Cloudflare Tunnel (no public IP, e.g. GitHub Codespaces)
+
+- No inbound ports and no public IP required; `cloudflared` connects out to Cloudflare on port **7844** (QUIC/UDP, falls back to TCP)
+- The domain must be managed by Cloudflare, with Zero Trust enabled
+- Every app is behind Cloudflare Access; the Gateway only accepts in-cluster clients (`10.42.0.0/16`)

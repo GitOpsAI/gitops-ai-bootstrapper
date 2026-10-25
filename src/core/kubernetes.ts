@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
-import { isMacOS, isCI } from "../utils/platform.js";
+import { useK3d } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
 import {
   bootstrapKubeconfigFileForCluster,
@@ -21,7 +21,7 @@ export interface ExistingCluster {
 }
 
 export function detectExistingClusters(): ExistingCluster | null {
-  if (isMacOS() || isCI()) {
+  if (useK3d()) {
     const names = listK3dClusters();
     if (names.length > 0) return { type: "k3d", names };
     return null;
@@ -94,7 +94,7 @@ export async function installK3s(): Promise<void> {
 export function setupKubeconfig(clusterName: string): string {
   mkdirSync(`${process.env.HOME}/.kube`, { recursive: true });
 
-  if (isMacOS() || isCI()) {
+  if (useK3d()) {
     const kubeconfigPath = bootstrapKubeconfigFileForCluster(clusterName);
     const kubeconfig = exec(`k3d kubeconfig get ${clusterName}`);
     writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });

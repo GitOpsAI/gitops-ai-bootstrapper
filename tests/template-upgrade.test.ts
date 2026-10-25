@@ -17,7 +17,7 @@ import {
 } from "../src/core/bootstrap-runner.js";
 import { reconcile } from "../src/core/flux.js";
 import { mergeUpstreamTemplate } from "../src/core/template-sync.js";
-import { COMPONENTS, type ProviderType } from "../src/schemas.js";
+import { COMPONENTS, TUNNEL_COMPONENT_ID, type ProviderType } from "../src/schemas.js";
 import {
   FLUX_SYSTEM_NS,
   kubeConfigFromDefault,
@@ -63,7 +63,8 @@ const FLUX_GIT_TOKEN = process.env.FLUX_GIT_TOKEN?.trim() ?? "";
 const TEMPLATE_UPGRADE_BRANCH = `ci-template-upgrade-${CI_PIPELINE_ID}`;
 const CLUSTER_NAME = "ci-test";
 
-const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
+// The tunnel needs a real Cloudflare account; it is covered by tests/cloudflare-tunnel.test.ts.
+const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id).filter((id) => id !== TUNNEL_COMPONENT_ID);
 const OPENCLAW_GATEWAY_TOKEN = randomBytes(32).toString("hex");
 
 let result: RunBootstrapResult;

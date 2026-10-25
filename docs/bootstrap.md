@@ -90,7 +90,33 @@ The wizard asks **"How will you access the cluster?"** and adapts the remaining 
 1. **Cluster IP** -- the CLI detects non-internal IPv4 addresses from your network interfaces and presents them as options (with the interface name as a hint). The list always includes `127.0.0.1 (localhost)` and an *Enter manually* fallback. If no LAN interfaces are found, a free-text input defaults to `127.0.0.1`.
 2. **Allowed CIDRs** -- defaults to the standard RFC 1918 private ranges (`10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16`). You can accept or customise.
 
+#### Cloudflare Tunnel (no public IP)
+
+Offered when DNS & TLS is enabled; the default in GitHub Codespaces. Nothing listens on the internet: an in-cluster `cloudflared` deployment connects out to Cloudflare and forwards `*.<domain>` to the Envoy Gateway.
+
+1. **Cloudflare setup token** -- a separate one-time token (Tunnel, Access and DNS edit, see [Prerequisites](prerequisites.md)). It is not saved in the install plan, the repo or the cluster.
+2. **Access allowed** -- comma-separated emails or `@domain` entries that may sign in (default: the Let's Encrypt email). Login is by one-time PIN unless you add an identity provider in Zero Trust.
+
+The wizard then sets the ingress allowlist to the k3d/k3s pod CIDR `10.42.0.0/16` and replaces **External DNS** with the **Cloudflare Tunnel** component. During bootstrap the CLI (idempotently, safe to re-run):
+
+- creates or reuses the locally-managed tunnel `gitops-ai-<cluster>` and derives its credentials from the tunnel token,
+- creates or updates the Access application for `*.<domain>` (before any DNS points at the tunnel),
+- upserts the proxied wildcard CNAME `*.<domain>` → `<tunnel-id>.cfargotunnel.com`, and warns about existing records for app subdomains that would shadow it,
+- renders `components/cloudflare-tunnel/cloudflared-config.yaml` (tunnel ID, Access team and AUD; cloudflared also rejects requests without a valid Access JWT) and SOPS-encrypts the credentials in `secret-cloudflare-tunnel.yaml`.
+
 All network values are written into `clusters/<name>/cluster-sync.yaml` and can be changed later via a Git commit.
+
+### Codespaces and headless environments
+
+When `CODESPACES=true` (or `CI=true`) the wizard never opens a browser and asks for tokens directly. In Codespaces it also:
+
+- defaults to **I already have a repo** with owner, name and path taken from `GITHUB_REPOSITORY` (`/workspaces/<repo>`),
+- pre-fills tokens from Codespaces secrets: `GITOPS_GIT_TOKEN`, `GITOPS_FLUX_GIT_TOKEN` (optional read-only token for Flux), `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_SETUP_TOKEN`,
+- creates the cluster with k3d (Docker-in-Docker from the template's `.devcontainer`).
+
+### Let's Encrypt staging
+
+Under **Additional settings** you can switch cert-manager to the Let's Encrypt staging CA (adds `letsencrypt_server` to `cluster-sync.yaml`). Use it for frequent re-bootstraps; production allows 5 duplicate certificates per week. Staging certificates are not browser-trusted, and in tunnel mode cloudflared skips origin certificate verification while staging is on.
 
 ### Review and Confirm
 
@@ -117,11 +143,11 @@ Installs missing CLI tools automatically:
 | `git`             | Homebrew | apt                      |
 | `flux-operator`   | Homebrew | curl                     |
 | `sops`, `age`     | Homebrew | apt / curl               |
-| `k3d`             | Homebrew | curl (macOS and CI only) |
+| `k3d`             | Homebrew | curl (macOS, CI and Codespaces only) |
 
 ### Phase 3: Kubernetes Cluster
 
-- **macOS / CI**: creates a k3d cluster (Kubernetes in Docker)
+- **macOS / CI / Codespaces**: creates a k3d cluster (Kubernetes in Docker)
 - **Linux**: installs k3s (lightweight Kubernetes). After bootstrap, you can add more nodes to scale horizontally -- see [Scaling the Cluster](scaling.md).
 
 Sets up kubeconfig and waits for the cluster to become ready.

@@ -2,6 +2,19 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 1.4.0
+
+### Added
+
+- **Cloudflare Tunnel network mode** — publish the cluster without a public IP. The wizard adds the opt-in `cloudflare-tunnel` template component (inserted into `components/kustomization.yaml` only when selected) and replaces External DNS with a single proxied `*.<domain>` CNAME to the tunnel. A one-time setup token (never persisted) creates or reuses the locally-managed tunnel `gitops-ai-<cluster>`, the Cloudflare Access application for `*.<domain>` (email / `@domain` allow policy, created before DNS points at the tunnel) and the wildcard record. Tunnel credentials are derived from the tunnel token on every run and SOPS-encrypted; the cloudflared config carries the Access team and AUD so the connector also validates the Access JWT. The Gateway allowlist is narrowed to the pod CIDR `10.42.0.0/16`.
+- **GitHub Codespaces support** — `CODESPACES=true` is detected: k3d instead of k3s (no systemd in the container), no browser-based logins, repo owner/name/path from `GITHUB_REPOSITORY`, tokens pre-filled from Codespaces secrets (`GITOPS_GIT_TOKEN`, `GITOPS_FLUX_GIT_TOKEN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_SETUP_TOKEN`), and Cloudflare Tunnel as the default network mode. The final steps explain how to keep the age key as a Codespaces secret.
+- **Let's Encrypt staging** — optional under *Additional settings*; writes `letsencrypt_server` to `cluster-sync.yaml`.
+- **Unit tests** — `npm run test:unit` covers platform detection, component pruning / opt-in insertion, cloudflared config rendering and the Cloudflare provisioning flow against a mocked API.
+
+### Changed
+
+- Integration and template-upgrade tests exclude `cloudflare-tunnel` (it needs a real Cloudflare account).
+
 ## 1.3.1
 
 ### Changed

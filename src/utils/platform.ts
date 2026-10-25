@@ -20,3 +20,10 @@ export function getArch(): Arch {
 export const isMacOS = (): boolean => getOS() === "darwin";
 export const isLinux = (): boolean => getOS() === "linux";
 export const isCI = (): boolean => process.env.CI === "true";
+export const isCodespaces = (): boolean => process.env.CODESPACES === "true";
+
+/** k3s needs systemd on the host; macOS, CI runners and Codespaces containers run k3d instead. */
+export const useK3d = (): boolean => isMacOS() || isCI() || isCodespaces();
+
+/** No local browser to complete OAuth flows (CI runners, Codespaces terminals). */
+export const isHeadless = (): boolean => isCI() || isCodespaces();
