@@ -9,6 +9,7 @@ import {
 } from "../utils/shell.js";
 import { isMacOS, getArch } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
+import { K3D_SHA256, K3D_VERSION } from "../schemas.js";
 
 const DOCKER_APP = "/Applications/Docker.app";
 const DOCKER_BUNDLED_CLI = `${DOCKER_APP}/Contents/Resources/bin/docker`;
@@ -93,10 +94,19 @@ const registry: Dependency[] = [
     name: "k3d",
     check: () => commandExists("k3d"),
     installDarwin: () => runInstall("brew install k3d"),
-    installLinux: () =>
-      runInstall(
-        'curl -sL "https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh" | bash',
-      ),
+    installLinux: async () => {
+      const arch = getArch();
+      const dir = await execAsync("mktemp -d");
+      try {
+        await execAsync(
+          `curl -fsSL -o "${dir}/k3d" "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-${arch}"`,
+        );
+        await execAsync(`echo "${K3D_SHA256[arch]}  ${dir}/k3d" | sha256sum -c -`);
+        await execAsync(`sudo install -o root -g root -m 0755 "${dir}/k3d" /usr/local/bin/k3d`);
+      } finally {
+        await execAsync(`rm -rf "${dir}"`);
+      }
+    },
   },
   {
     name: "git",

@@ -158,7 +158,14 @@ export const LETSENCRYPT_STAGING_SERVER = "https://acme-staging-v02.api.letsencr
 // Constants
 // ---------------------------------------------------------------------------
 
-export const KUBERNETES_VERSION = "1.35.1";
+/** k3s stable channel; must stay within the Envoy Gateway compatibility matrix (v1.9: Kubernetes 1.33–1.36). */
+export const KUBERNETES_VERSION = "1.36.5";
+export const K3D_VERSION = "v5.9.0";
+/** SHA-256 of the release binaries, from the k3d release `checksums.txt`. */
+export const K3D_SHA256: Record<"amd64" | "arm64", string> = {
+  amd64: "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0",
+  arm64: "03cde5cf23e6e8e67de5a039ecf26e5b85aca82fba3e5d13dadf904cd218a250",
+};
 /** Host for the canonical GitOps template repository (clone + template sync upstream). */
 export const SOURCE_TEMPLATE_HOST = "github.com";
 /** owner/repo for the template (used in HTTPS URL and GitHub API paths). */

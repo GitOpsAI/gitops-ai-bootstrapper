@@ -19,6 +19,8 @@ Replaces 1.3.1, which was unpublished from npm because of a bug.
 - Secrets of every selected component are always generated and encrypted; missing credentials only warn.
 - OpenClaw gets a random gateway token when none is given.
 - npm releases use trusted publishing (OIDC) instead of a stored npm token.
+- Kubernetes (k3s / k3d node image) **1.35.1 → 1.36.5**, the k3s stable release.
+- k3d is pinned to **v5.9.0** and its checksum verified on Linux, instead of installing the latest via `install.sh`.
 
 ### Fixed
 
