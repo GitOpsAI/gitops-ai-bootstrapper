@@ -77,39 +77,48 @@ export async function openclawPair(): Promise<void> {
 }
 
 /**
- * Run OpenClaw's interactive OpenAI Codex (ChatGPT OAuth) login inside the cluster.
+ * Browser OAuth redirects to localhost:1455 inside the pod, which a browser outside the
+ * cluster cannot reach; the device-code flow works from any device.
+ */
+const CODEX_LOGIN_ARGV = ["openclaw", "models", "auth", "login", "--provider", "openai", "--device-code"];
+
+/**
+ * Run OpenClaw's ChatGPT/Codex subscription login inside the cluster.
  * Uses the same session path as {@link podConsole} (kubeconfig, API check, TTY exec).
  * Tokens are stored on the OpenClaw PVC under ~/.openclaw (see OpenClaw OAuth docs).
  */
 export async function openclawCodexLogin(): Promise<void> {
+  const pod = `${WORKLOAD.namespace}/${WORKLOAD.name}`;
   p.note(
     `${pc.bold("Subscription auth")}\n\n` +
-      `This runs OpenClaw's PKCE OAuth flow in the ${pc.cyan(`${WORKLOAD.namespace}/${WORKLOAD.name}`)} pod ` +
+      `This runs OpenClaw's ChatGPT device-code sign-in in the ${pc.cyan(pod)} pod ` +
       `(same mechanism as ${pc.cyan("gitops-ai pod-console")} — Kubernetes API attach).\n` +
-      `If the browser callback cannot reach the pod (typical on remote clusters), ` +
-      `paste the redirect URL or code when the CLI asks.\n\n` +
-      pc.dim("Docs: https://docs.openclaw.ai/concepts/oauth"),
+      `Open the link it prints on any device, enter the code and approve; the pod stores the tokens.\n\n` +
+      pc.dim("Docs: https://docs.openclaw.ai/providers/openai/setup"),
     "OpenAI Codex",
   );
 
   await podConsole(undefined, {
     sessionTitle: "OpenClaw — OpenAI Codex (OAuth)",
-    sessionSubtitle: "OAuth login in the openclaw workload",
+    sessionSubtitle: "ChatGPT sign-in in the openclaw workload",
     workload: WORKLOAD,
     workloadMissingHint: MISSING_HINT,
     container: k8sApi.OPENCLAW_K8S_CONTAINER_NAME,
     shell: "bash",
-    execCommand: ["openclaw", "models", "auth", "login", "--provider", "openai-codex"],
+    execCommand: CODEX_LOGIN_ARGV,
     execSuccessMessage: "OAuth login finished",
     execFailureHint:
-      "If the browser cannot reach the callback inside the pod, choose paste / manual URL when OpenClaw offers it. " +
-      `Check logs: ${pc.cyan(LOGS_HINT)}`,
+      "If device-code sign-in is disabled for your ChatGPT workspace, run the browser flow and paste the redirect URL " +
+      `when asked: ${pc.cyan(
+        `kubectl exec -it -n ${WORKLOAD.namespace} ${WORKLOAD.name}-0 -c ${k8sApi.OPENCLAW_K8S_CONTAINER_NAME} -- openclaw models auth login --provider openai`,
+      )}\nCheck logs: ${pc.cyan(LOGS_HINT)}`,
   });
 
   p.log.message(
     pc.dim(
-      "If models still fail, set the default model to a Codex-capable id in OpenClaw " +
-        "(e.g. openai-codex/…) per OpenClaw provider docs.",
+      `Verify: ${pc.cyan(
+        `kubectl exec -n ${WORKLOAD.namespace} ${WORKLOAD.name}-0 -c ${k8sApi.OPENCLAW_K8S_CONTAINER_NAME} -- openclaw models auth list --provider openai`,
+      )}. ` + "If models still fail, select an openai/* model (e.g. openai/gpt-6-astra) in the OpenClaw UI.",
     ),
   );
 }
