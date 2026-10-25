@@ -16,6 +16,10 @@ All notable changes to the **gitops-ai** bootstrapper CLI are documented here. V
 
 - Integration and template-upgrade tests exclude `cloudflare-tunnel` (it needs a real Cloudflare account).
 
+### Fixed
+
+- **`openclaw-codex-login` / `openclaw-pair` after the OpenClaw operator migration** — they looked for `Deployment openclaw/openclaw` (container `main`, `node dist/index.js`) and failed with a raw 404. They now exec into the operator's `StatefulSet openclaw-instance/openclaw-instance`, container `openclaw`, using the `openclaw` CLI, and report a missing workload with the commands to check it.
+
 ## 1.3.1
 
 ### Changed

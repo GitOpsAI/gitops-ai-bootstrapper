@@ -210,4 +210,4 @@ After bootstrap, if OpenClaw is installed, pair a device with:
 npx gitops-ai openclaw-pair
 ```
 
-This connects to the OpenClaw deployment (Kubernetes API exec into the pod), lists pending device pairing requests, and lets you approve one by entering its request ID.
+This connects to the operator-managed OpenClaw pod (StatefulSet `openclaw-instance/openclaw-instance`, container `openclaw`, via Kubernetes API exec), lists pending device pairing requests, and lets you approve one by entering its request ID. `npx gitops-ai openclaw-codex-login` uses the same pod for the OpenAI Codex OAuth login.
