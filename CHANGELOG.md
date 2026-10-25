@@ -30,6 +30,7 @@ Replaces 1.3.1, which was unpublished from npm because of a bug.
 - `openclaw-codex-login` and `openclaw-pair` failed with 404 after the OpenClaw operator migration.
 - Codex login was rejected on OpenClaw 2026.10; it now uses the `openai` provider with a device code.
 - The CLI hung after interactive sessions (`openclaw-codex-login`, `pod-console`).
+- **Security**: high-severity DoS and memory-disclosure advisories fixed by updating `js-yaml` 4.3.2, `ws` 8.22.0 and `zod` 4.6.7.
 
 ## 1.3.0
 
