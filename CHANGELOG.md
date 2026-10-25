@@ -4,7 +4,7 @@ All notable changes to the **gitops-ai** bootstrapper CLI are documented here. V
 
 ## 1.3.2
 
-Replaces 1.3.1, which was unpublished from npm.
+Replaces 1.3.1, which was unpublished from npm because of a bug.
 
 ### Added
 
