@@ -16,6 +16,7 @@ typecheck:
     - npm ci --ignore-scripts
   script:
     - npx tsc --noEmit
+    - npm run test:unit
   rules:
     - if: $CI_MERGE_REQUEST_IID
     - if: $CI_COMMIT_BRANCH == "main"

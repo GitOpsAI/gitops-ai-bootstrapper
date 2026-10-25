@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
-import { isMacOS, isCI } from "../utils/platform.js";
+import { useK3d } from "../utils/platform.js";
 import { log, withSpinner } from "../utils/log.js";
 import { exec, execAsync, execSafe } from "../utils/shell.js";
 import { ensureAll } from "./dependencies.js";
@@ -23,11 +23,24 @@ import {
   defaultSopsConfig,
   httpsGitCredentialUsername,
   shouldUseSshDeployKey,
+  LETSENCRYPT_STAGING_SERVER,
   SOURCE_TEMPLATE_HOST,
   SOURCE_PROJECT_PATH,
+  TUNNEL_COMPONENT_ID,
   type BootstrapConfig,
+  type SopsConfig,
 } from "../schemas.js";
 import { createGitHubDeployKey } from "./github.js";
+import { provisionCloudflareTunnel } from "./cloudflare-tunnel.js";
+
+/**
+ * Components shipped in `clusters/_template/components/` but not listed in its
+ * kustomization.yaml (older bootstrappers would apply them unrendered).
+ * Value: the entry they are inserted after when selected.
+ */
+const OPT_IN_COMPONENTS: Record<string, string> = {
+  [TUNNEL_COMPONENT_ID]: "enwoy-gateway",
+};
 
 export interface RunBootstrapResult {
   fluxInstanceInstalled: boolean;
@@ -49,7 +62,7 @@ export async function runBootstrap(
 
   // ── CLI dependencies ──────────────────────────────────────────────
   const tools = ["git", "flux-operator", "sops", "age"];
-  if (isMacOS() || isCI()) tools.push("k3d");
+  if (useK3d()) tools.push("k3d");
   log.step("Installing CLI dependencies");
   await ensureAll(tools);
 
@@ -96,7 +109,7 @@ export async function runBootstrap(
 
   // ── Kubernetes cluster ─────────────────────────────────────────────
   log.step("Setting up Kubernetes cluster");
-  if (isMacOS() || isCI()) {
+  if (useK3d()) {
     await k8s.createK3dCluster(config.clusterName);
   } else {
     await k8s.installK3s();
@@ -201,9 +214,14 @@ export async function configureClusterTemplateInRepo(
       }),
     );
     log.detail("Rendered cluster-sync.yaml with cluster vars");
+    if (config.letsencryptStaging) {
+      useLetsencryptStaging(syncFile);
+      log.detail("Let's Encrypt staging issuer enabled (certificates are not browser-trusted)");
+    }
   }
 
   pruneDisabledComponents(clusterDir, config.selectedComponents);
+  includeOptInComponents(clusterDir, config.selectedComponents);
 
   await setupSops(config, repoRoot, clusterDir);
 
@@ -349,7 +367,7 @@ function envsubst(content: string, vars: Record<string, string>): string {
   );
 }
 
-function pruneDisabledComponents(
+export function pruneDisabledComponents(
   clusterDir: string,
   selectedComponents: string[],
 ): void {
@@ -381,6 +399,144 @@ function pruneDisabledComponents(
   log.success(
     `Cluster template configured (${selectedComponents.length} components enabled)`,
   );
+}
+
+export function includeOptInComponents(
+  clusterDir: string,
+  selectedComponents: string[],
+): void {
+  const kustomizationPath = `${clusterDir}/components/kustomization.yaml`;
+  if (!existsSync(kustomizationPath)) return;
+
+  const lines = readFileSync(kustomizationPath, "utf-8").split("\n");
+  for (const [id, after] of Object.entries(OPT_IN_COMPONENTS)) {
+    if (!selectedComponents.includes(id)) continue;
+    if (!existsSync(`${clusterDir}/components/${id}`)) {
+      throw new Error(
+        `Template has no components/${id}; update the repo from the template (gitops-ai template sync) first`,
+      );
+    }
+    if (lines.some((l) => l.trim() === `- ${id}`)) continue;
+
+    const entries = lines
+      .map((l, i) => ({ l, i }))
+      .filter(({ l }) => /^\s+-\s/.test(l));
+    const anchor = entries.find(({ l }) => l.trim() === `- ${after}`) ?? entries.at(-1);
+    if (!anchor) {
+      throw new Error(`${kustomizationPath} has no resources list to add ${id} to`);
+    }
+    const indent = anchor.l.match(/^\s*/)?.[0] ?? "  ";
+    lines.splice(anchor.i + 1, 0, `${indent}- ${id}`);
+    log.detail(`Enabled opt-in component: ${id}`);
+  }
+  writeFileSync(kustomizationPath, lines.join("\n"));
+}
+
+/** Adds `letsencrypt_server` next to `letsencrypt_email` in the rendered postBuild map. */
+export function useLetsencryptStaging(syncFile: string): void {
+  const content = readFileSync(syncFile, "utf-8");
+  if (/^\s*letsencrypt_server:/m.test(content)) return;
+  const patched = content.replace(
+    /^(\s*)(letsencrypt_email:.*)$/m,
+    `$1$2\n$1letsencrypt_server: "${LETSENCRYPT_STAGING_SERVER}"`,
+  );
+  if (patched === content) {
+    throw new Error(`${syncFile} has no letsencrypt_email substitution to add the staging server to`);
+  }
+  writeFileSync(syncFile, patched);
+}
+
+export interface CloudflaredConfigValues {
+  tunnelId: string;
+  accessTeam: string;
+  accessAud: string;
+  noTlsVerify: boolean;
+}
+
+/**
+ * Plain (unquoted) substitution keeps `noTLSVerify` a YAML boolean; every value is
+ * format-checked first so nothing from the API can inject YAML into the config.
+ */
+export function renderCloudflaredConfig(content: string, values: CloudflaredConfigValues): string {
+  const checks: [string, string, RegExp][] = [
+    ["tunnel id", values.tunnelId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
+    ["Access team", values.accessTeam, /^[a-z0-9][a-z0-9-]{0,62}$/i],
+    ["Access AUD", values.accessAud, /^[a-f0-9]{32,128}$/i],
+  ];
+  for (const [label, value, re] of checks) {
+    if (!re.test(value)) throw new Error(`Unexpected Cloudflare ${label}: ${JSON.stringify(value)}`);
+  }
+
+  const rendered = Object.entries({
+    CLOUDFLARE_TUNNEL_ID: values.tunnelId,
+    CLOUDFLARE_ACCESS_TEAM: values.accessTeam,
+    CLOUDFLARE_ACCESS_AUD: values.accessAud,
+    CLOUDFLARE_ORIGIN_NO_TLS_VERIFY: String(values.noTlsVerify),
+  }).reduce((acc, [key, value]) => acc.replaceAll(`\${${key}}`, value), content);
+
+  const unresolved = [...new Set(rendered.match(/\$\{[A-Z_][A-Z0-9_]*\}/g) ?? [])];
+  if (unresolved.length > 0) {
+    throw new Error(`Unresolved placeholders in cloudflared config: ${unresolved.join(", ")}`);
+  }
+  return rendered;
+}
+
+async function setupCloudflareTunnel(
+  config: BootstrapConfig,
+  componentDir: string,
+  sopsCfg: SopsConfig,
+  repoRoot: string,
+): Promise<void> {
+  if (!config.cloudflareSetupToken) {
+    throw new Error(
+      "cloudflare-tunnel: a Cloudflare setup token (Tunnel, Access and DNS edit) is required",
+    );
+  }
+  if (!config.cloudflareAccessAllowed?.length) {
+    throw new Error(
+      "cloudflare-tunnel: at least one email or @domain must be allowed through Cloudflare Access",
+    );
+  }
+
+  const subdomains = config.selectedComponents
+    .map((id) => COMPONENTS.find((c) => c.id === id)?.subdomain)
+    .filter((s): s is string => !!s);
+
+  const tunnel = await withSpinner("Provisioning Cloudflare Tunnel, Access and DNS", () =>
+    provisionCloudflareTunnel({
+      apiToken: config.cloudflareSetupToken!,
+      clusterName: config.clusterName,
+      clusterDomain: config.clusterDomain,
+      accessAllowed: config.cloudflareAccessAllowed!,
+      componentSubdomains: subdomains,
+    }),
+  );
+  for (const warning of tunnel.warnings) log.warn(warning);
+  log.detail(
+    `Tunnel ${tunnel.tunnelName} (${tunnel.tunnelId}) ${tunnel.tunnelCreated ? "created" : "reused"}; ` +
+      `Access team '${tunnel.accessTeam}' guards *.${config.clusterDomain}`,
+  );
+
+  const configFile = `${componentDir}/cloudflared-config.yaml`;
+  writeFileSync(
+    configFile,
+    renderCloudflaredConfig(readFileSync(configFile, "utf-8"), {
+      tunnelId: tunnel.tunnelId,
+      accessTeam: tunnel.accessTeam,
+      accessAud: tunnel.accessAud,
+      // Staging certificates do not chain to a public root, so cloudflared cannot verify them.
+      noTlsVerify: !!config.letsencryptStaging,
+    }),
+  );
+  log.detail(`Rendered: ${TUNNEL_COMPONENT_ID}/cloudflared-config.yaml`);
+
+  await encryption.substituteAndEncrypt(
+    `${componentDir}/secret-cloudflare-tunnel.yaml`,
+    { CLOUDFLARE_TUNNEL_CREDENTIALS: tunnel.credentialsJson },
+    sopsCfg,
+    repoRoot,
+  );
+  log.detail(`Encrypted: ${TUNNEL_COMPONENT_ID}/secret-cloudflare-tunnel.yaml`);
 }
 
 async function setupSops(
@@ -453,6 +609,10 @@ async function setupSops(
       repoRoot,
     );
     log.detail("Encrypted: openclaw/secret-openclaw-envs.yaml");
+  }
+
+  if (selected.includes(TUNNEL_COMPONENT_ID)) {
+    await setupCloudflareTunnel(config, `${componentsDir}/${TUNNEL_COMPONENT_ID}`, sopsCfg, repoRoot);
   }
 
   log.success("All secrets encrypted with SOPS");

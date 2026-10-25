@@ -30,22 +30,30 @@ function sleep(ms: number): Promise<void> {
  */
 function prepareStdinForInteractiveExec(useTty: boolean): () => void {
   const stdin = process.stdin;
-  if (typeof stdin.isPaused === "function" && stdin.isPaused()) {
-    stdin.resume();
-  }
-  if (!useTty || !stdin.isTTY) {
-    return () => {};
-  }
+  const wasPaused = typeof stdin.isPaused === "function" && stdin.isPaused();
+  // The exec client adds its own stdin listeners and never removes them; a flowing
+  // stdin with listeners keeps the event loop (and the CLI) alive after the command ends.
+  const listenersBefore = {
+    data: new Set(stdin.listeners("data")),
+    end: new Set(stdin.listeners("end")),
+  };
+  if (wasPaused) stdin.resume();
+
   const rs = stdin as tty.ReadStream;
-  if (typeof rs.setRawMode !== "function") {
-    return () => {};
-  }
-  const previousRaw = rs.isRaw;
-  rs.setRawMode(true);
+  const canRaw = useTty && stdin.isTTY && typeof rs.setRawMode === "function";
+  const previousRaw = canRaw ? rs.isRaw : false;
+  if (canRaw) rs.setRawMode(true);
+
   return () => {
-    if (stdin.isTTY && typeof rs.setRawMode === "function") {
-      rs.setRawMode(previousRaw);
+    if (canRaw && stdin.isTTY) rs.setRawMode(previousRaw);
+    for (const event of ["data", "end"] as const) {
+      for (const listener of stdin.listeners(event)) {
+        if (!listenersBefore[event].has(listener)) {
+          stdin.removeListener(event, listener as (...args: unknown[]) => void);
+        }
+      }
     }
+    if (wasPaused || stdin.listenerCount("data") === 0) stdin.pause();
   };
 }
 
@@ -227,29 +235,73 @@ export async function createSecretFromFilesApi(
   await createSecretLiteralsApi(kc, name, namespace, stringData);
 }
 
-export async function podNameForDeployment(
+export interface WorkloadRef {
+  kind: "Deployment" | "StatefulSet";
+  namespace: string;
+  name: string;
+}
+
+/** StatefulSet the operator creates for `OpenClawInstance/openclaw-instance` (templates/ai/openclaw-instance). */
+export const OPENCLAW_WORKLOAD: WorkloadRef = {
+  kind: "StatefulSet",
+  namespace: "openclaw-instance",
+  name: "openclaw-instance",
+};
+
+/** Main container of the operator-managed pod (sidecars: gateway-proxy, otel-collector). */
+export const OPENCLAW_K8S_CONTAINER_NAME = "openclaw";
+
+export function workloadLabel(ref: WorkloadRef): string {
+  return `${ref.kind} ${ref.namespace}/${ref.name}`;
+}
+
+export class WorkloadNotFoundError extends Error {
+  constructor(readonly ref: WorkloadRef) {
+    super(`${workloadLabel(ref)} not found`);
+    this.name = "WorkloadNotFoundError";
+  }
+}
+
+export async function podNameForWorkload(
   kc: k8s.KubeConfig,
-  namespace: string,
-  deploymentName: string,
+  ref: WorkloadRef,
 ): Promise<string | null> {
   const { apps, core } = makeClients(kc);
-  const dep = await apps.readNamespacedDeployment({
-    name: deploymentName,
-    namespace,
-  });
-  const match = dep.spec?.selector?.matchLabels;
-  if (!match || Object.keys(match).length === 0) return null;
-  const labelSelector = Object.entries(match)
+  const args = { name: ref.name, namespace: ref.namespace };
+  let selector: Record<string, string> | undefined;
+  try {
+    const workload =
+      ref.kind === "StatefulSet"
+        ? await apps.readNamespacedStatefulSet(args)
+        : await apps.readNamespacedDeployment(args);
+    selector = workload.spec?.selector?.matchLabels;
+  } catch (e: unknown) {
+    if ((e as { code?: number })?.code === 404) throw new WorkloadNotFoundError(ref);
+    throw e;
+  }
+  if (!selector || Object.keys(selector).length === 0) return null;
+  const labelSelector = Object.entries(selector)
     .map(([k, v]) => `${k}=${String(v)}`)
     .join(",");
-  const pods = await core.listNamespacedPod({ namespace, labelSelector });
+  const pods = await core.listNamespacedPod({ namespace: ref.namespace, labelSelector });
   const pick =
     pods.items?.find((p) => p.status?.phase === "Running") ?? pods.items?.[0];
   return pick?.metadata?.name ?? null;
 }
 
-/** Matches `containers.main` in templates/ai/openclaw/helm-release-openclaw.yaml */
-export const OPENCLAW_K8S_CONTAINER_NAME = "main";
+export function podNameForDeployment(
+  kc: k8s.KubeConfig,
+  namespace: string,
+  deploymentName: string,
+): Promise<string | null> {
+  return podNameForWorkload(kc, { kind: "Deployment", namespace, name: deploymentName });
+}
+
+async function requirePodForWorkload(kc: k8s.KubeConfig, ref: WorkloadRef): Promise<string> {
+  const podName = await podNameForWorkload(kc, ref);
+  if (!podName) throw new Error(`No pod found for ${workloadLabel(ref)}`);
+  return podName;
+}
 
 function execContainerName(explicit?: string): string {
   return explicit ?? OPENCLAW_K8S_CONTAINER_NAME;
@@ -275,22 +327,17 @@ function statusExitCode(status: V1Status): number {
 }
 
 /**
- * Run a command in a pod (by deployment name). Returns captured stdout/stderr.
+ * Run a command in a workload's pod. Returns captured stdout/stderr.
  * Omit `containerName` to use {@link OPENCLAW_K8S_CONTAINER_NAME}.
  */
-export async function execInDeploymentContainer(
+export async function execInWorkloadContainer(
   kc: k8s.KubeConfig,
-  namespace: string,
-  deploymentName: string,
+  ref: WorkloadRef,
   command: string[],
   containerName?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const podName = await podNameForDeployment(kc, namespace, deploymentName);
-  if (!podName) {
-    throw new Error(
-      `No pod found for Deployment ${namespace}/${deploymentName}`,
-    );
-  }
+  const namespace = ref.namespace;
+  const podName = await requirePodForWorkload(kc, ref);
   const resolvedContainer = execContainerName(containerName);
   const execApi = new k8s.Exec(kc);
   const stdoutChunks: Buffer[] = [];
@@ -336,19 +383,14 @@ export async function execInDeploymentContainer(
 /**
  * Stream exec to process stdout/stderr (for interactive listing).
  */
-export async function execInDeploymentContainerTty(
+export async function execInWorkloadContainerTty(
   kc: k8s.KubeConfig,
-  namespace: string,
-  deploymentName: string,
+  ref: WorkloadRef,
   command: string[],
   containerName?: string,
 ): Promise<number> {
-  const podName = await podNameForDeployment(kc, namespace, deploymentName);
-  if (!podName) {
-    throw new Error(
-      `No pod found for Deployment ${namespace}/${deploymentName}`,
-    );
-  }
+  const namespace = ref.namespace;
+  const podName = await requirePodForWorkload(kc, ref);
   const resolvedContainer = execContainerName(containerName);
   const execApi = new k8s.Exec(kc);
   let exitCode = 0;
@@ -373,7 +415,7 @@ export async function execInDeploymentContainerTty(
   return exitCode;
 }
 
-/** Result of {@link execInDeploymentInteractive} / {@link execInPodInteractive}. */
+/** Result of {@link execInWorkloadInteractive} / {@link execInPodInteractive}. */
 export interface ExecInteractiveResult {
   exitCode: number;
   /** Present on Failure; may include `message` / `reason` from the API. */
@@ -393,6 +435,7 @@ export async function execInteractiveAttach(
   const execApi = new k8s.Exec(kc);
   let exitCode = 0;
   let k8sStatus: V1Status | undefined;
+  let socket: { close(): void } | undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       execApi
@@ -411,9 +454,13 @@ export async function execInteractiveAttach(
             resolve();
           },
         )
+        .then((ws) => {
+          socket = ws;
+        })
         .catch(reject);
     });
   } finally {
+    socket?.close();
     restoreStdin();
   }
   return { exitCode, k8sStatus };
@@ -423,23 +470,17 @@ export async function execInteractiveAttach(
  * Interactive exec with local stdin attached (like `kubectl exec -it`).
  * Use for OAuth flows, shells, or any process that reads from the terminal.
  */
-export async function execInDeploymentInteractive(
+export async function execInWorkloadInteractive(
   kc: k8s.KubeConfig,
-  namespace: string,
-  deploymentName: string,
+  ref: WorkloadRef,
   command: string[],
   options?: { tty?: boolean; containerName?: string },
 ): Promise<ExecInteractiveResult> {
-  const podName = await podNameForDeployment(kc, namespace, deploymentName);
-  if (!podName) {
-    throw new Error(
-      `No pod found for Deployment ${namespace}/${deploymentName}`,
-    );
-  }
+  const podName = await requirePodForWorkload(kc, ref);
   const resolvedContainer = execContainerName(options?.containerName);
   return execInteractiveAttach(
     kc,
-    namespace,
+    ref.namespace,
     podName,
     resolvedContainer,
     command,

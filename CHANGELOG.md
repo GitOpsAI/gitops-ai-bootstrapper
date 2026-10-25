@@ -2,18 +2,35 @@
 
 All notable changes to the **gitops-ai** bootstrapper CLI are documented here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## 1.3.1
+## 1.3.2
+
+Replaces 1.3.1, which was unpublished from npm because of a bug.
+
+### Added
+
+- **Cloudflare Tunnel mode**: public access without a public IP. One wildcard DNS record, every app behind Cloudflare Access, tunnel credentials SOPS-encrypted.
+- **GitHub Codespaces**: detected automatically. Runs k3d, uses Tunnel mode and reads tokens from [Codespaces secrets](docs/bootstrap.md).
+- **Cloudflare pre-flight check**: the zone, Zero Trust and token permissions are verified before anything is created.
+- **Let's Encrypt staging** option under *Additional settings*.
+- **Unit tests**: `npm run test:unit`, also run in CI.
 
 ### Changed
 
-- **Secret generation** — secrets of every selected component are now always rendered and SOPS-encrypted; missing Cloudflare/OpenAI credentials render as empty strings with a warning, and bootstrap fails fast if any `${VAR}` placeholder remains.
-- **OpenClaw gateway token** — a random 256-bit gateway token is generated when none is provided instead of leaving the gateway without an auth token.
+- Secrets of every selected component are always generated and encrypted; missing credentials only warn.
+- OpenClaw gets a random gateway token when none is given.
+- npm releases use trusted publishing (OIDC) instead of a stored npm token.
+- Kubernetes (k3s / k3d node image) **1.35.1 → 1.36.5**, the k3s stable release.
+- k3d is pinned to **v5.9.0** and its checksum verified on Linux, instead of installing the latest via `install.sh`.
 
 ### Fixed
 
-- **Flux 2.9 strict post-build substitution** — kustomize-controller v1.9 enables `StrictPostBuildSubstitutions` by default, so committed secret templates with unresolved `${VAR}` placeholders broke the `cluster-components` Kustomization.
-- **Secret rendering** — whole-value placeholders are emitted as quoted YAML strings (empty or special-character values no longer become `null` or invalid YAML), and `$` sequences in values are no longer interpreted as replacement patterns.
-- **SOPS failure handling** — a failed encryption now aborts bootstrap and deletes the plaintext file instead of leaving it to be committed.
+- Bootstrap broke on Flux 2.9 because of unresolved `${VAR}` placeholders in secrets.
+- Empty or special-character secret values produced invalid YAML.
+- A failed SOPS encryption could leave a plaintext secret to be committed.
+- `openclaw-codex-login` and `openclaw-pair` failed with 404 after the OpenClaw operator migration.
+- Codex login was rejected on OpenClaw 2026.10; it now uses the `openai` provider with a device code.
+- The CLI hung after interactive sessions (`openclaw-codex-login`, `pod-console`).
+- **Security**: high-severity DoS and memory-disclosure advisories fixed by updating `js-yaml` 4.3.2, `ws` 8.22.0 and `zod` 4.6.7.
 
 ## 1.3.0
 

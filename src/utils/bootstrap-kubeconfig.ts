@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
 import { loadInstallPlan } from "./config.js";
-import { isMacOS, isCI } from "./platform.js";
+import { useK3d } from "./platform.js";
 import { INSTALL_PLAN_PATH } from "../schemas.js";
 
 /** Written by `setupKubeconfig`: first line is the absolute path to the active bootstrap kubeconfig. */
@@ -74,7 +74,7 @@ export function resolveBootstrapKubeconfigPath(): string {
  * Matches `setupKubeconfig`: k3d → `~/.kube/k3d-<name>`, k3s → `~/.kube/config`.
  */
 export function bootstrapKubeconfigFileForCluster(clusterName: string): string {
-  if (isMacOS() || isCI()) {
+  if (useK3d()) {
     return path.join(homedir(), ".kube", `k3d-${clusterName}`);
   }
   return path.join(homedir(), ".kube", "config");

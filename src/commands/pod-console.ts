@@ -8,9 +8,12 @@ import {
   kubeConnectionSummary,
   listContainerNamesInPod,
   listPodsForPodConsole,
-  podNameForDeployment,
+  podNameForWorkload,
+  workloadLabel,
+  WorkloadNotFoundError,
   type PodConsoleRow,
   type ExecInteractiveResult,
+  type WorkloadRef,
 } from "../core/k8s-api.js";
 
 export interface PodConsoleCliOptions {
@@ -18,8 +21,10 @@ export interface PodConsoleCliOptions {
   namespace?: string;
   container?: string;
   shell: string;
-  /** Resolve pod from this Deployment (requires `namespace`). Skips pod picker. */
-  deployment?: string;
+  /** Resolve the pod from this workload. Skips the pod picker. */
+  workload?: WorkloadRef;
+  /** Shown when {@link workload} does not exist (e.g. component disabled or not reconciled yet). */
+  workloadMissingHint?: string;
   /** Run this argv with TTY instead of an interactive shell (same exec path as shell). */
   execCommand?: string[];
   /** Override {@link header} title/sub (e.g. OpenClaw codex login). */
@@ -124,16 +129,19 @@ export async function podConsole(
   if (podName) {
     namespace = opts.namespace ?? "default";
     name = podName;
-  } else if (opts.deployment?.trim()) {
-    const ns = opts.namespace?.trim();
-    if (!ns) {
-      log.error("With deployment, set namespace (e.g. openclaw).");
+  } else if (opts.workload) {
+    namespace = opts.workload.namespace;
+    let resolved: string | null;
+    try {
+      resolved = await podNameForWorkload(kc, opts.workload);
+    } catch (err) {
+      if (!(err instanceof WorkloadNotFoundError)) throw err;
+      log.error(err.message);
+      if (opts.workloadMissingHint) log.detail(opts.workloadMissingHint);
       process.exit(1);
     }
-    namespace = ns;
-    const resolved = await podNameForDeployment(kc, namespace, opts.deployment.trim());
     if (!resolved) {
-      log.error(`No pod found for Deployment ${namespace}/${opts.deployment}`);
+      log.error(`No pod found for ${workloadLabel(opts.workload)}`);
       process.exit(1);
     }
     name = resolved;

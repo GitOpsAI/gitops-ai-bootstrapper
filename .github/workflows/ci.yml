@@ -43,6 +43,8 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Type-check
         run: npx tsc --noEmit
+      - name: Unit tests
+        run: npm run test:unit
 
   test-template-sync:
     name: Test · Template sync

@@ -1,7 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import { execSafe } from "../src/utils/shell.js";
 import { runBootstrap, type RunBootstrapResult } from "../src/core/bootstrap-runner.js";
-import { COMPONENTS, type ProviderType } from "../src/schemas.js";
+import { COMPONENTS, TUNNEL_COMPONENT_ID, type ProviderType } from "../src/schemas.js";
 import { kubeConfigFromDefault, makeClients, FLUX_SYSTEM_NS } from "../src/core/k8s-api.js";
 import {
   resolveRepoRoot,
@@ -53,7 +53,8 @@ function remoteUrl(): string {
   return `https://oauth2:${GIT_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git`;
 }
 
-const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id);
+// The tunnel needs a real Cloudflare account; it is covered by tests/cloudflare-tunnel.test.ts.
+const ALL_COMPONENT_IDS = COMPONENTS.map((c) => c.id).filter((id) => id !== TUNNEL_COMPONENT_ID);
 
 describe("Integration", { timeout: 1_800_000 }, () => {
   before(async () => {

@@ -1,8 +1,23 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { header, log, handleCancel } from "../utils/log.js";
+import { header, log, handleCancel, formatError } from "../utils/log.js";
 import * as k8sApi from "../core/k8s-api.js";
 import { podConsole } from "./pod-console.js";
+
+const WORKLOAD = k8sApi.OPENCLAW_WORKLOAD;
+
+const MISSING_HINT =
+  `Is the OpenClaw component enabled and reconciled? Check: ${pc.cyan(
+    `kubectl get openclawinstance,statefulset,pods -n ${WORKLOAD.namespace}`,
+  )} and ${pc.cyan("flux get helmreleases -A")}`;
+
+const LOGS_HINT = `kubectl logs -n ${WORKLOAD.namespace} statefulset/${WORKLOAD.name} -c ${k8sApi.OPENCLAW_K8S_CONTAINER_NAME} --tail=100`;
+
+function failWith(prefix: string, err: unknown): never {
+  log.error(`${prefix}\n${formatError(err)}`);
+  if (err instanceof k8sApi.WorkloadNotFoundError) log.detail(MISSING_HINT);
+  return process.exit(1) as never;
+}
 
 /**
  * Pair an OpenClaw device with the cluster (list + approve device requests in the openclaw workload).
@@ -21,19 +36,17 @@ export async function openclawPair(): Promise<void> {
   log.step("Listing pending device requests");
   try {
     const kc = k8sApi.kubeConfigFromDefault();
-    const code = await k8sApi.execInDeploymentContainerTty(
-      kc,
+    const code = await k8sApi.execInWorkloadContainerTty(kc, WORKLOAD, [
       "openclaw",
-      "openclaw",
-      ["node", "dist/index.js", "devices", "list"],
-    );
+      "devices",
+      "list",
+    ]);
     if (code !== 0) {
       log.error("devices list failed");
       return process.exit(1) as never;
     }
-  } catch {
-    log.error("Failed to list device requests");
-    return process.exit(1) as never;
+  } catch (err) {
+    failWith("Failed to list device requests", err);
   }
 
   const requestId = await p.text({
@@ -45,13 +58,17 @@ export async function openclawPair(): Promise<void> {
   if (p.isCancel(requestId)) handleCancel();
 
   log.step(`Approving device ${requestId}`);
-  const kcApprove = k8sApi.kubeConfigFromDefault();
-  const approve = await k8sApi.execInDeploymentContainer(
-    kcApprove,
-    "openclaw",
-    "openclaw",
-    ["node", "dist/index.js", "devices", "approve", requestId as string],
-  );
+  let approve: Awaited<ReturnType<typeof k8sApi.execInWorkloadContainer>>;
+  try {
+    approve = await k8sApi.execInWorkloadContainer(k8sApi.kubeConfigFromDefault(), WORKLOAD, [
+      "openclaw",
+      "devices",
+      "approve",
+      requestId as string,
+    ]);
+  } catch (err) {
+    failWith("Failed to approve the device", err);
+  }
   if (approve.exitCode !== 0) {
     log.error(approve.stderr || "approve failed");
     return process.exit(1) as never;
@@ -60,47 +77,50 @@ export async function openclawPair(): Promise<void> {
 }
 
 /**
- * Run OpenClaw's interactive OpenAI Codex (ChatGPT OAuth) login inside the cluster.
+ * Browser OAuth redirects to localhost:1455 inside the pod, which a browser outside the
+ * cluster cannot reach; the device-code flow works from any device.
+ */
+const CODEX_LOGIN_ARGV = ["openclaw", "models", "auth", "login", "--provider", "openai", "--device-code"];
+
+/**
+ * Run OpenClaw's ChatGPT/Codex subscription login inside the cluster.
  * Uses the same session path as {@link podConsole} (kubeconfig, API check, TTY exec).
  * Tokens are stored on the OpenClaw PVC under ~/.openclaw (see OpenClaw OAuth docs).
  */
 export async function openclawCodexLogin(): Promise<void> {
+  const pod = `${WORKLOAD.namespace}/${WORKLOAD.name}`;
   p.note(
     `${pc.bold("Subscription auth")}\n\n` +
-      `This runs OpenClaw's PKCE OAuth flow in the ${pc.cyan("openclaw")} pod ` +
+      `This runs OpenClaw's ChatGPT device-code sign-in in the ${pc.cyan(pod)} pod ` +
       `(same mechanism as ${pc.cyan("gitops-ai pod-console")} — Kubernetes API attach).\n` +
-      `If the browser callback cannot reach the pod (typical on remote clusters), ` +
-      `paste the redirect URL or code when the CLI asks.\n\n` +
-      pc.dim("Docs: https://docs.openclaw.ai/concepts/oauth"),
+      `Open the link it prints on any device, enter the code and approve; the pod stores the tokens.\n\n` +
+      pc.dim("Docs: https://docs.openclaw.ai/providers/openai/setup"),
     "OpenAI Codex",
   );
 
   await podConsole(undefined, {
     sessionTitle: "OpenClaw — OpenAI Codex (OAuth)",
-    sessionSubtitle: "OAuth login in the openclaw workload",
-    namespace: "openclaw",
-    deployment: "openclaw",
+    sessionSubtitle: "ChatGPT sign-in in the openclaw workload",
+    workload: WORKLOAD,
+    workloadMissingHint: MISSING_HINT,
     container: k8sApi.OPENCLAW_K8S_CONTAINER_NAME,
     shell: "bash",
-    execCommand: [
-      "node",
-      "dist/index.js",
-      "models",
-      "auth",
-      "login",
-      "--provider",
-      "openai-codex",
-    ],
+    execCommand: CODEX_LOGIN_ARGV,
     execSuccessMessage: "OAuth login finished",
     execFailureHint:
-      "If the browser cannot reach the callback inside the pod, choose paste / manual URL when OpenClaw offers it. " +
-      `Check logs: ${pc.cyan("kubectl logs -n openclaw deployment/openclaw --all-containers --tail=100")}`,
+      "If device-code sign-in is disabled for your ChatGPT workspace, run the browser flow and paste the redirect URL " +
+      `when asked: ${pc.cyan(
+        `kubectl exec -it -n ${WORKLOAD.namespace} ${WORKLOAD.name}-0 -c ${k8sApi.OPENCLAW_K8S_CONTAINER_NAME} -- openclaw models auth login --provider openai`,
+      )}\nCheck logs: ${pc.cyan(LOGS_HINT)}`,
   });
 
   p.log.message(
     pc.dim(
-      "If models still fail, set the default model to a Codex-capable id in OpenClaw " +
-        "(e.g. openai-codex/…) per OpenClaw provider docs.",
+      `Verify: ${pc.cyan(
+        `kubectl exec -n ${WORKLOAD.namespace} ${WORKLOAD.name}-0 -c ${k8sApi.OPENCLAW_K8S_CONTAINER_NAME} -- openclaw models auth list --provider openai`,
+      )}. ` +
+        "The default model is managed in Git (agents.defaults.model.primary in templates/ai/openclaw-instance); " +
+        "change it there, since the operator merges that config into the pod.",
     ),
   );
 }

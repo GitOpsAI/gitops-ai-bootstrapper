@@ -30,6 +30,8 @@ curl -sfL https://raw.githubusercontent.com/GitOpsAI/gitops-ai-bootstrapper/refs
 
 The interactive wizard will prompt for your Git provider (GitHub or GitLab), create or use a repository from the [GitOps AI Template](https://github.com/GitOpsAI/gitops-ai-template), and run the full bootstrap.
 
+No server? Run the same command in a **GitHub Codespace** opened on your repo created from the template: the template's devcontainer provides Docker and the CLI tools, the cluster runs in k3d, and the **Cloudflare Tunnel** network mode publishes it on your domain behind Cloudflare Access, with no public IP. See [Running in GitHub Codespaces](https://github.com/GitOpsAI/gitops-ai-template#running-in-github-codespaces) for the limits of the free tier and the one-time setup.
+
 ## Requirements
 
 | Resource    | Minimum                                                  |
@@ -135,8 +137,9 @@ The bootstrap wizard lets you select which components to install:
 | Victoria Metrics Stack      | No       | Metrics collection, alerting and long-term storage |
 | Flux Web UI                 | No       | Web dashboard for Flux status                      |
 | OpenClaw                    | No       | AI assistant gateway (requires OpenAI key)         |
+| Cloudflare Tunnel           | Tunnel   | Public access via outbound tunnel + Access         |
 
-Components marked **DNS/TLS** are automatically enabled when you opt into automatic DNS and TLS management during the wizard.
+Components marked **DNS/TLS** are automatically enabled when you opt into automatic DNS and TLS management during the wizard. **Cloudflare Tunnel** is enabled by the *Cloudflare Tunnel* network mode, which replaces External DNS with one wildcard record pointing at the tunnel.
 
 ## Documentation
 
@@ -161,6 +164,7 @@ npm run dev              # Run CLI locally via tsx
 npm run build            # Compile TypeScript to dist/
 npm run typecheck        # Type-check without emitting
 npm run test:sync        # Unit tests for template sync logic
+npm run test:unit        # Unit tests: platform detection, components, Cloudflare Tunnel provisioning
 npm run test:integration # Full k3d + Flux integration test (requires Docker)
 ```
 

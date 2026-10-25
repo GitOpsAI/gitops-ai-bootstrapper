@@ -55,6 +55,7 @@ export const ClusterConfigSchema = z.object({
     .refine((v) => v.includes("."), "Must be a valid domain"),
   clusterPublicIp: z.string().min(1),
   letsencryptEmail: z.string().optional(),
+  letsencryptStaging: z.boolean().optional(),
   ingressAllowedIps: z.string().min(1),
 });
 
@@ -73,6 +74,10 @@ export type OpenclawAuthMode = (typeof OPENCLAW_AUTH_MODES)[number];
 
 export const SecretsConfigSchema = z.object({
   cloudflareApiToken: z.string().optional(),
+  /** Bootstrap-only token for Tunnel/DNS/Access provisioning; never written to the repo or cluster. */
+  cloudflareSetupToken: z.string().optional(),
+  /** Emails or `@domain` entries allowed through Cloudflare Access (tunnel mode). */
+  cloudflareAccessAllowed: z.array(z.string()).optional(),
   openaiApiKey: z.string().optional(),
   openclawGatewayToken: z.string().optional(),
   /** OpenClaw: platform API key in Git (SOPS) vs Codex subscription via OAuth after install */
@@ -129,20 +134,38 @@ export const COMPONENTS: ComponentDef[] = [
   { id: "victoria-metrics-k8s-stack", label: "Victoria Metrics Stack", hint: "Metrics collection, alerting and long-term storage", required: false, subdomain: "victoria" },
   { id: "flux-web", label: "Flux Web UI", hint: "Web dashboard for Flux status", required: false, subdomain: "flux" },
   { id: "openclaw", label: "OpenClaw", hint: "AI gateway — OpenAI API key or Codex (OAuth) after install", required: false, secrets: ["secret-openclaw-envs.yaml"], subdomain: "openclaw" },
+  { id: "cloudflare-tunnel", label: "Cloudflare Tunnel", hint: "Outbound-only public access via Cloudflare, guarded by Access", required: false, secrets: ["secret-cloudflare-tunnel.yaml"] },
 ];
 
 export const REQUIRED_COMPONENT_IDS = COMPONENTS.filter((c) => c.required).map((c) => c.id);
 export const DNS_TLS_COMPONENT_IDS = ["cert-manager", "external-dns"];
 export const MONITORING_COMPONENT_IDS = ["grafana-operator", "victoria-metrics-k8s-stack"];
+/** Selected by the "Cloudflare Tunnel" network mode, never from the component multi-select. */
+export const TUNNEL_COMPONENT_ID = "cloudflare-tunnel";
 export const OPTIONAL_COMPONENTS = COMPONENTS.filter(
-  (c) => !c.required && !DNS_TLS_COMPONENT_IDS.includes(c.id) && !MONITORING_COMPONENT_IDS.includes(c.id),
+  (c) =>
+    !c.required &&
+    !DNS_TLS_COMPONENT_IDS.includes(c.id) &&
+    !MONITORING_COMPONENT_IDS.includes(c.id) &&
+    c.id !== TUNNEL_COMPONENT_ID,
 );
+
+/** Default k3s/k3d pod CIDR: in tunnel mode only in-cluster clients (cloudflared) may reach the Gateway. */
+export const K3D_POD_CIDR = "10.42.0.0/16";
+export const LETSENCRYPT_STAGING_SERVER = "https://acme-staging-v02.api.letsencrypt.org/directory";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const KUBERNETES_VERSION = "1.35.1";
+/** k3s stable channel; must stay within the Envoy Gateway compatibility matrix (v1.9: Kubernetes 1.33–1.36). */
+export const KUBERNETES_VERSION = "1.36.5";
+export const K3D_VERSION = "v5.9.0";
+/** SHA-256 of the release binaries, from the k3d release `checksums.txt`. */
+export const K3D_SHA256: Record<"amd64" | "arm64", string> = {
+  amd64: "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0",
+  arm64: "03cde5cf23e6e8e67de5a039ecf26e5b85aca82fba3e5d13dadf904cd218a250",
+};
 /** Host for the canonical GitOps template repository (clone + template sync upstream). */
 export const SOURCE_TEMPLATE_HOST = "github.com";
 /** owner/repo for the template (used in HTTPS URL and GitHub API paths). */
